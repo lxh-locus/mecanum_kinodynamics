@@ -30,6 +30,16 @@ from scipy.spatial import ConvexHull
 from mecanum_common import Mecanum
 
 
+def _preferred_colormap():
+    """Prefer winter; fall back to a built-in map when unavailable."""
+    names = plt.colormaps()
+    if "winter" in names:
+        return "winter"
+    if "cmc.winter" in names:
+        return "cmc.winter"
+    return "magma"
+
+
 # ---------------------------------------------------------------------------
 # Zonotope helpers (same approach as dynamic_acceleration_limit_box.py)
 # ---------------------------------------------------------------------------
@@ -140,6 +150,7 @@ def _plot_stopping_times(
         model, max_wheel_velocity, range_scale, samples
     )
     t_stop = _stopping_times(accel_hull, bodyv_pts)
+    cmap_name = _preferred_colormap()
 
     fig = plt.figure(figsize=(14, 7))
 
@@ -158,40 +169,28 @@ def _plot_stopping_times(
     sc = ax_main.scatter(
         plot_pts[:, 0], plot_pts[:, 1], plot_pts[:, 2],
         c=plot_t,
-        cmap="plasma",
+        cmap=cmap_name,
         s=6,
         alpha=0.65,
         edgecolors="none",
     )
-    ax_main.set_facecolor("#0e1117")
-    ax_main.xaxis.pane.set_facecolor((0.10, 0.12, 0.16, 0.95))
-    ax_main.yaxis.pane.set_facecolor((0.10, 0.12, 0.16, 0.95))
-    ax_main.zaxis.pane.set_facecolor((0.10, 0.12, 0.16, 0.95))
-    ax_main.xaxis.pane.set_edgecolor("#8b949e")
-    ax_main.yaxis.pane.set_edgecolor("#8b949e")
-    ax_main.zaxis.pane.set_edgecolor("#8b949e")
-    ax_main.tick_params(colors="#e6edf3")
-    ax_main.set_xlabel("vx [m/s]", color="#e6edf3")
-    ax_main.set_ylabel("vy [m/s]", color="#e6edf3")
-    ax_main.set_zlabel("vw [rad/s]", color="#e6edf3")
-    ax_main.set_title("Stopping Time over Kinematic Feasibility Volume",
-                      color="#f0f6fc")
+    ax_main.set_xlabel("vx [m/s]")
+    ax_main.set_ylabel("vy [m/s]")
+    ax_main.set_zlabel("vw [rad/s]")
+    ax_main.set_title("Stopping Time over Kinematic Feasibility Volume")
     ax_main.set_xlim(-range_scale * max_vx, range_scale * max_vx)
     ax_main.set_ylim(-range_scale * max_vy, range_scale * max_vy)
     ax_main.set_zlim(-range_scale * max_vw, range_scale * max_vw)
 
     cb_main = fig.colorbar(sc, ax=ax_main, fraction=0.04, pad=0.07)
     cb_main.set_label("t* [s]")
-    cb_main.outline.set_edgecolor("#8b949e")
-    cb_main.ax.yaxis.set_tick_params(color="#e6edf3", labelcolor="#e6edf3")
-    cb_main.ax.yaxis.label.set_color("#e6edf3")
 
     # ---- Right: stopping time vs speed magnitude ----
     ax_scatter = fig.add_subplot(122)
     speed = np.linalg.norm(plot_pts[:, :2], axis=1)   # translational speed
 
     ax_scatter.scatter(speed, plot_t, c=np.abs(plot_pts[:, 2]),
-                       cmap="viridis", s=3, alpha=0.4, edgecolors="none")
+                       cmap=cmap_name, s=3, alpha=0.4, edgecolors="none")
     ax_scatter.set_xlabel("Translational speed |[vx, vy]| [m/s]")
     ax_scatter.set_ylabel("Minimum stopping time [s]")
     ax_scatter.set_title("Stopping Time vs Translational Speed\n"
@@ -199,7 +198,7 @@ def _plot_stopping_times(
     cb2 = fig.colorbar(
         plt.cm.ScalarMappable(
             norm=plt.Normalize(0, np.max(np.abs(plot_pts[:, 2]))),
-            cmap="viridis",
+            cmap=cmap_name,
         ),
         ax=ax_scatter,
         fraction=0.04,
@@ -236,8 +235,8 @@ def main():
     parser.add_argument(
         "--max-torque",
         type=float,
-        default=5.0,
-        help="Maximum absolute wheel torque in N·m (default: 5.0).",
+        default=3.5,
+        help="Maximum absolute wheel torque in N·m (default: 3.5).",
     )
     parser.add_argument(
         "--range-scale",
@@ -248,8 +247,8 @@ def main():
     parser.add_argument(
         "--samples",
         type=int,
-        default=22,
-        help="Sampling resolution per axis in body-velocity space (default: 22).",
+        default=23,
+        help="Sampling resolution per axis in body-velocity space (default: 23).",
     )
     parser.add_argument(
         "--max-points",

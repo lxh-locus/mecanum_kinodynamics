@@ -295,6 +295,12 @@ $$\boxed{d_\text{trans}(\mathbf{v}_0)
 $$\boxed{\theta_\text{stop}(\mathbf{v}_0)
   = \tfrac{1}{2}\,|v_\omega|\cdot t^*(\mathbf{v}_0)}$$
 
+Here $|v_\omega|$ (rendered in the scripts as `|vw| [rad/s]`) is the absolute
+value of body yaw rate.  It measures how fast the platform is rotating,
+independent of clockwise/counterclockwise sign.  In the stopping plots, this
+quantity is used as a color channel to show rotational-speed magnitude while
+the vertical axis shows stopping time or translational stopping distance.
+
 ### 7.4 Quadratic dependence on speed
 
 Because $t^*$ is linear in $\|\mathbf{v}_0\|$ (Section 6.4), and

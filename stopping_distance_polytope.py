@@ -38,6 +38,16 @@ from scipy.spatial import ConvexHull
 from mecanum_common import Mecanum
 
 
+def _preferred_colormap():
+    """Prefer winter; fall back to a built-in map when unavailable."""
+    names = plt.colormaps()
+    if "winter" in names:
+        return "winter"
+    if "cmc.winter" in names:
+        return "cmc.winter"
+    return "magma"
+
+
 # ---------------------------------------------------------------------------
 # Zonotope helpers
 # ---------------------------------------------------------------------------
@@ -134,6 +144,7 @@ def _plot_stopping_distances(
         model, max_wheel_velocity, range_scale, samples
     )
     t_stop, d_trans, d_rot = _stopping_distances(accel_hull, bodyv_pts)
+    cmap_name = _preferred_colormap()
 
     if bodyv_pts.shape[0] > max_points:
         rng = np.random.default_rng(0)
@@ -152,40 +163,32 @@ def _plot_stopping_distances(
     sc3d = ax3d.scatter(
         bodyv_pts[:, 0], bodyv_pts[:, 1], bodyv_pts[:, 2],
         c=d_trans,
-        cmap="plasma",
+        cmap=cmap_name,
         s=6,
         alpha=0.65,
         edgecolors="none",
     )
-    ax3d.set_facecolor("#0e1117")
-    for pane in (ax3d.xaxis.pane, ax3d.yaxis.pane, ax3d.zaxis.pane):
-        pane.set_facecolor((0.10, 0.12, 0.16, 0.95))
-        pane.set_edgecolor("#8b949e")
-    ax3d.tick_params(colors="#e6edf3")
-    ax3d.set_xlabel("vx [m/s]", color="#e6edf3")
-    ax3d.set_ylabel("vy [m/s]", color="#e6edf3")
-    ax3d.set_zlabel("vw [rad/s]", color="#e6edf3")
-    ax3d.set_title("Translational Stopping Distance [m]", color="#f0f6fc")
+    ax3d.set_xlabel("vx [m/s]")
+    ax3d.set_ylabel("vy [m/s]")
+    ax3d.set_zlabel("vw [rad/s]")
+    ax3d.set_title("Body-Velocity Space Colored by Translational Stopping Distance")
     ax3d.set_xlim(-range_scale * max_vx, range_scale * max_vx)
     ax3d.set_ylim(-range_scale * max_vy, range_scale * max_vy)
     ax3d.set_zlim(-range_scale * max_vw, range_scale * max_vw)
     cb3d = fig.colorbar(sc3d, ax=ax3d, fraction=0.04, pad=0.07)
-    cb3d.set_label("d_trans [m]")
-    cb3d.outline.set_edgecolor("#8b949e")
-    cb3d.ax.yaxis.set_tick_params(color="#e6edf3", labelcolor="#e6edf3")
-    cb3d.ax.yaxis.label.set_color("#e6edf3")
+    cb3d.set_label("Translational stopping distance d_trans [m]")
 
-    # ---- Right: d_trans and d_rot vs translational speed ----
+    # ---- Right: d_trans and theta_stop vs translational speed ----
     ax2d = fig.add_subplot(122)
 
     sc_trans = ax2d.scatter(
         v_trans, d_trans,
         c=np.abs(bodyv_pts[:, 2]),
-        cmap="YlOrRd",
+        cmap=cmap_name,
         s=4,
         alpha=0.45,
         edgecolors="none",
-        label="translational",
+        label="Translational distance d_trans [m]",
         zorder=2,
     )
     ax2d.scatter(
@@ -194,7 +197,7 @@ def _plot_stopping_distances(
         s=3,
         alpha=0.25,
         edgecolors="none",
-        label="angular (×1 m)",
+        label="Angular displacement theta_stop [rad]",
         zorder=1,
     )
 
@@ -204,33 +207,29 @@ def _plot_stopping_distances(
     a_max_trans = np.sum(np.abs(G[0])) * max_torque
     v_ref = np.linspace(0, np.max(v_trans) * 1.05, 200)
     d_ref = v_ref ** 2 / (2.0 * a_max_trans)
-    ax2d.plot(v_ref, d_ref, "w--", linewidth=1.2, alpha=0.8,
-              label=f"pure-ax reference  d = v²/(2·{a_max_trans:.2f})")
+    ax2d.plot(
+        v_ref,
+        d_ref,
+        "k--",
+        linewidth=1.2,
+        alpha=0.8,
+        label=(
+            "Reference (pure vx): "
+            f"d = v^2/(2 a_max), a_max = {a_max_trans:.2f} m/s^2"
+        ),
+    )
 
-    ax2d.set_xlabel("Translational speed  |[vx, vy]|  [m/s]")
-    ax2d.set_ylabel("Stopping distance [m]")
-    ax2d.set_title("Stopping Distance vs Speed\n"
-                   "(scatter color = |vw| [rad/s];  blue = angular stop [rad])")
+    ax2d.set_xlabel("Translational speed ||[vx, vy]|| [m/s]")
+    ax2d.set_ylabel("Stopping metric (m for d_trans, rad for theta_stop)")
+    ax2d.set_title("Stopping Metrics vs Translational Speed (color = |vw| [rad/s])")
     ax2d.legend(fontsize=8, framealpha=0.6)
-    ax2d.set_facecolor("#0e1117")
-    ax2d.spines[:].set_edgecolor("#8b949e")
-    ax2d.tick_params(colors="#e6edf3")
-    ax2d.xaxis.label.set_color("#e6edf3")
-    ax2d.yaxis.label.set_color("#e6edf3")
-    ax2d.title.set_color("#f0f6fc")
-
     cb2d = fig.colorbar(sc_trans, ax=ax2d, fraction=0.04, pad=0.04)
     cb2d.set_label("|vw| [rad/s]")
-    cb2d.outline.set_edgecolor("#8b949e")
-    cb2d.ax.yaxis.set_tick_params(color="#e6edf3", labelcolor="#e6edf3")
-    cb2d.ax.yaxis.label.set_color("#e6edf3")
 
-    fig.patch.set_facecolor("#0e1117")
     fig.suptitle(
-        f"Mecanum Stopping Distances  "
+        f"Mecanum Stopping Distance and Rotation  "
         f"(w_max = {max_wheel_velocity} rad/s,  M_max = {max_torque} N·m)",
         y=0.99,
-        color="#f0f6fc",
     )
     plt.tight_layout()
     plt.show()
@@ -256,8 +255,8 @@ def main():
     parser.add_argument(
         "--max-torque",
         type=float,
-        default=5.0,
-        help="Maximum absolute wheel torque in N·m (default: 5.0).",
+        default=3.5,
+        help="Maximum absolute wheel torque in N·m (default: 3.5).",
     )
     parser.add_argument(
         "--range-scale",
@@ -268,8 +267,8 @@ def main():
     parser.add_argument(
         "--samples",
         type=int,
-        default=22,
-        help="Sampling resolution per axis in body-velocity space (default: 22).",
+        default=23,
+        help="Sampling resolution per axis in body-velocity space (default: 23).",
     )
     parser.add_argument(
         "--max-points",

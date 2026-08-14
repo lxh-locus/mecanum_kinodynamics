@@ -160,8 +160,8 @@ def main():
     parser.add_argument(
         "--max-torque",
         type=float,
-        default=5.0,
-        help="Maximum absolute wheel torque in N·m (default: 5.0).",
+        default=3.5,
+        help="Maximum absolute wheel torque in N·m (default: 3.5).",
     )
     parser.add_argument(
         "--range-scale",
