@@ -15,7 +15,7 @@ class Mecanum:
         self.wb_hwidth = 0.25  # wheel base half-width, m
         self.wb_hlength = 0.3  # wheel base half-length, m
         self.wheel_radius = 0.1  # wheel radius, m
-        self.body_mass = 20.0  # total platform mass, kg
+        self.body_mass = 100.0  # total platform mass, kg
         self.wheel_spin_inertia = 0.02  # wheel inertia about spin axis, kg*m^2
         self.body_yaw_inertia = 1.2  # platform yaw inertia about COM, kg*m^2
 
