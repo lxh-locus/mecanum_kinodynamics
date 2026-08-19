@@ -185,7 +185,7 @@ def _plot_stopping_distances(
         v_trans, d_trans,
         c=np.abs(bodyv_pts[:, 2]),
         cmap=cmap_name,
-        s=4,
+        s=10,
         alpha=0.45,
         edgecolors="none",
         label="Translational distance d_trans [m]",
@@ -194,9 +194,10 @@ def _plot_stopping_distances(
     ax2d.scatter(
         v_trans, d_rot,
         c="steelblue",
-        s=3,
+        s=6,
         alpha=0.25,
         edgecolors="none",
+        marker='X',
         label="Angular displacement theta_stop [rad]",
         zorder=1,
     )

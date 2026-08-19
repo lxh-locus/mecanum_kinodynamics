@@ -2,6 +2,21 @@
 import numpy as np
 import pytest
 
+from mecanum_physics import (
+    MecanumPhysicsParams,
+    exact_dynamics_coeffs,
+    forward_dynamics_exact,
+    forward_dynamics_linear,
+    forward_dynamics_matrix_linear,
+    forward_kinematics,
+    inverse_dynamics_exact,
+    inverse_dynamics_linear,
+    inverse_kinematics,
+    params_from_model,
+    relax_wheel_velocity_to_constraint,
+    wheel_constraint_violation,
+)
+
 class Mecanum:
     """
     Nominal model
@@ -11,56 +26,60 @@ class Mecanum:
     - Body frame is x forward, y left, z up (FLU)
     """
 
-    def __init__(self):
-        self.wb_hwidth = 0.25  # wheel base half-width, m
-        self.wb_hlength = 0.3  # wheel base half-length, m
-        self.wheel_radius = 0.1  # wheel radius, m
-        self.body_mass = 100.0  # total platform mass, kg
-        self.wheel_spin_inertia = 0.02  # wheel inertia about spin axis, kg*m^2
-        self.body_yaw_inertia = 1.2  # platform yaw inertia about COM, kg*m^2
+    def __init__(self, model=None, params=None):
+        """
+        Initialize model constants from either:
+        - `model`: an existing model object via params_from_model, or
+        - `params`: a MecanumPhysicsParams bundle, or
+        - default MecanumPhysicsParams values.
+        """
+        if (model is not None) and (params is not None):
+            raise ValueError("Provide either model or params, not both")
+
+        if model is not None:
+            physics_params = params_from_model(model)
+        elif params is not None:
+            physics_params = params
+        else:
+            physics_params = MecanumPhysicsParams()
+
+        self.wb_hwidth = float(physics_params.wb_hwidth)  # wheel base half-width, m
+        self.wb_hlength = float(physics_params.wb_hlength)  # wheel base half-length, m
+        self.wheel_radius = float(physics_params.wheel_radius)  # wheel radius, m
+        self.body_mass = float(physics_params.body_mass)  # total platform mass, kg
+        self.wheel_spin_inertia = float(physics_params.wheel_spin_inertia)  # wheel inertia about spin axis, kg*m^2
+        self.body_yaw_inertia = float(physics_params.body_yaw_inertia)  # platform yaw inertia about COM, kg*m^2
+
+    def _physics_params(self):
+        return params_from_model(self)
 
     @staticmethod
     def _constraint_violation(w1, w2, w3, w4):
         """Return value for the no-slip relative wheel velocity constraint."""
-        return w1 + w2 - w3 - w4
+        return wheel_constraint_violation([w1, w2, w3, w4])
 
     @staticmethod
     def _relax_to_constraint(w1, w2, w3, w4):
         """Project wheel speeds to the closest set that satisfies w1+w2-w3-w4=0."""
-        shift = (w1 + w2 - w3 - w4) / 4.0
-        return (w1 - shift, w2 - shift, w3 + shift, w4 + shift)
+        relaxed = relax_wheel_velocity_to_constraint([w1, w2, w3, w4])
+        return tuple(relaxed)
 
     def bodyv_from_wheelv(self, w1, w2, w3, w4, strict=True):
         """
         Calculate body velocity from wheel velocities
         "strict" enforces relative wheel velocity constraint
         """
-        violation = self._constraint_violation(w1, w2, w3, w4)
-        if strict and not np.isclose(violation, 0.0):
-            raise ValueError(
-                "Relative wheel velocity constraint broken, strict following enforced. "
-                f"w1 + w2 - w3 - w4 = {violation}"
-            )
-        if (not strict) and (not np.isclose(violation, 0.0)):
-            w1, w2, w3, w4 = self._relax_to_constraint(w1, w2, w3, w4)
-
-        bodyv_x = self.wheel_radius / 2.0 * (w1 + w2)  # forward
-        bodyv_y = self.wheel_radius / 2.0 * (w3 - w1)  # left
-        bodyv_w = self.wheel_radius / (2.0 * (self.wb_hwidth + self.wb_hlength)) * (w2 - w3)
-
-        return np.array([bodyv_x, bodyv_y, bodyv_w])
+        return forward_kinematics(
+            [w1, w2, w3, w4],
+            params=self._physics_params(),
+            strict=strict,
+        )
 
     def wheelv_from_bodyv(self, vx, vy, vw):
         """
         Calculate wheel velocities from body velocities
         """
-        l_plus_w = self.wb_hlength + self.wb_hwidth
-        return np.array([
-            vx - vy - l_plus_w * vw,
-            vx + vy + l_plus_w * vw,
-            vx + vy - l_plus_w * vw,
-            vx - vy + l_plus_w * vw
-        ]) / self.wheel_radius
+        return inverse_kinematics([vx, vy, vw], params=self._physics_params())
 
     def _bodya_from_wheeltorque_matrix(self):
         """
@@ -69,27 +88,16 @@ class Mecanum:
         This uses the Zeidis 2019 approximate dynamic model (Eq. 44-45,
         differentiated in time): [ax, ay, alpha]^T = G [M1..M4]^T.
         """
-        l_plus_w = self.wb_hlength + self.wb_hwidth
-        radius = self.wheel_radius
-
-        linear_denom = self.body_mass * radius * radius + 4.0 * self.wheel_spin_inertia
-        yaw_denom = self.body_yaw_inertia * radius * radius + 4.0 * self.wheel_spin_inertia * l_plus_w * l_plus_w
-
-        k_linear = radius / linear_denom
-        k_yaw = radius / yaw_denom
-
-        return np.array([
-            [k_linear, k_linear, k_linear, k_linear],
-            [-k_linear, k_linear, k_linear, -k_linear],
-            [-k_yaw, k_yaw, -k_yaw, k_yaw],
-        ])
+        return forward_dynamics_matrix_linear(self._physics_params())
 
     def bodya_from_wheeltorque(self, m1, m2, m3, m4):
         """
         Calculate body acceleration [ax, ay, alpha] from wheel torques [M1..M4].
         """
-        torques = np.array([m1, m2, m3, m4], dtype=float)
-        return self._bodya_from_wheeltorque_matrix() @ torques
+        return forward_dynamics_linear(
+            [m1, m2, m3, m4],
+            params=self._physics_params(),
+        )
 
     def wheeltorque_from_bodya(self, ax, ay, alpha):
         """
@@ -98,38 +106,27 @@ class Mecanum:
         The system is underdetermined (3 equations, 4 unknowns), so this returns
         the minimum-norm torque solution via Moore-Penrose pseudoinverse.
         """
-        body_accel = np.array([ax, ay, alpha], dtype=float)
-        gain = self._bodya_from_wheeltorque_matrix()
-        return np.linalg.pinv(gain) @ body_accel
+        return inverse_dynamics_linear(
+            [ax, ay, alpha],
+            params=self._physics_params(),
+        )
 
     def _exact_dynamics_coeffs(self):
         """Return coefficients (k2, A2, C2) from Zeidis exact Eq. (66)."""
-        l_plus_w = self.wb_hlength + self.wb_hwidth
-        radius = self.wheel_radius
-        ms = self.body_mass
-        j1 = self.wheel_spin_inertia
-        jc = self.body_yaw_inertia
-
-        a = ms * radius * radius / 8.0 + jc * radius * radius / (16.0 * l_plus_w * l_plus_w) + j1
-        b = jc * radius * radius / (16.0 * l_plus_w * l_plus_w)
-        c = ms * radius * radius / 8.0 - jc * radius * radius / (16.0 * l_plus_w * l_plus_w)
-
-        k2 = radius * (b + c) / (2.0 * l_plus_w * (a + c))
-        a2 = (3.0 * a + 4.0 * b - c) / (4.0 * (a + c) * (a + 2.0 * b - c))
-        c2 = (a + 4.0 * b - 3.0 * c) / (4.0 * (a + c) * (a + 2.0 * b - c))
-        return k2, a2, c2
+        return exact_dynamics_coeffs(self._physics_params())
 
     def _prepare_exact_wheel_state(self, w1, w2, w3, w4, strict):
         """Validate/project wheel state before exact dynamics evaluation."""
-        violation = self._constraint_violation(w1, w2, w3, w4)
+        wheel_velocity = np.array([w1, w2, w3, w4], dtype=float)
+        violation = wheel_constraint_violation(wheel_velocity)
         if strict and not np.isclose(violation, 0.0):
             raise ValueError(
                 "Relative wheel velocity constraint broken, strict following enforced. "
                 f"w1 + w2 - w3 - w4 = {violation}"
             )
         if (not strict) and (not np.isclose(violation, 0.0)):
-            w1, w2, w3, w4 = self._relax_to_constraint(w1, w2, w3, w4)
-        return w1, w2, w3, w4
+            wheel_velocity = relax_wheel_velocity_to_constraint(wheel_velocity)
+        return tuple(wheel_velocity)
 
     def bodya_from_wheeltorque_exact(self, m1, m2, m3, m4, w1, w2, w3, w4, strict=True):
         """
@@ -138,24 +135,12 @@ class Mecanum:
         Inputs w1..w4 are wheel angular velocities (rad/s), used in the nonlinear
         non-holonomic terms of Eq. (65).
         """
-        w1, w2, w3, w4 = self._prepare_exact_wheel_state(w1, w2, w3, w4, strict=strict)
-
-        k2, a2, c2 = self._exact_dynamics_coeffs()
-        h = 0.5 * (a2 - c2)
-
-        nl_1 = k2 * (w2 + w3) * (w2 - w3)
-        nl_23 = k2 * (w3 - 2.0 * w1 - w2) * (w2 - w3)
-
-        wdd_1 = nl_1 + a2 * m1 - h * (m2 - m3) + c2 * m4
-        wdd_2 = nl_23 + a2 * m2 - h * (m1 - m4) + c2 * m3
-        wdd_3 = nl_23 + a2 * m3 + h * (m1 - m4) + c2 * m2
-
-        l_plus_w = self.wb_hlength + self.wb_hwidth
-        radius = self.wheel_radius
-        ax = radius / 2.0 * (wdd_1 + wdd_2)
-        ay = radius / 2.0 * (wdd_3 - wdd_1)
-        alpha = radius / (2.0 * l_plus_w) * (wdd_2 - wdd_3)
-        return np.array([ax, ay, alpha])
+        return forward_dynamics_exact(
+            [m1, m2, m3, m4],
+            [w1, w2, w3, w4],
+            params=self._physics_params(),
+            strict=strict,
+        )
 
     def wheeltorque_from_bodya_exact(self, ax, ay, alpha, w1, w2, w3, w4, strict=True):
         """
@@ -164,31 +149,12 @@ class Mecanum:
         This is underdetermined (3 equations, 4 torques); returns minimum-norm
         solution consistent with Eq. (65).
         """
-        w1, w2, w3, w4 = self._prepare_exact_wheel_state(w1, w2, w3, w4, strict=strict)
-
-        k2, a2, c2 = self._exact_dynamics_coeffs()
-        h = 0.5 * (a2 - c2)
-
-        nl_1 = k2 * (w2 + w3) * (w2 - w3)
-        nl_23 = k2 * (w3 - 2.0 * w1 - w2) * (w2 - w3)
-
-        l_plus_w = self.wb_hlength + self.wb_hwidth
-        radius = self.wheel_radius
-        wdd_1 = (ax - ay - l_plus_w * alpha) / radius
-        wdd_2 = (ax + ay + l_plus_w * alpha) / radius
-        wdd_3 = (ax + ay - l_plus_w * alpha) / radius
-
-        rhs = np.array([
-            wdd_1 - nl_1,
-            wdd_2 - nl_23,
-            wdd_3 - nl_23,
-        ])
-        gain = np.array([
-            [a2, -h, h, c2],
-            [-h, a2, c2, h],
-            [h, c2, a2, -h],
-        ])
-        return np.linalg.pinv(gain) @ rhs
+        return inverse_dynamics_exact(
+            [ax, ay, alpha],
+            [w1, w2, w3, w4],
+            params=self._physics_params(),
+            strict=strict,
+        )
 
 
 def test_body_to_wheel_to_body_roundtrip():
