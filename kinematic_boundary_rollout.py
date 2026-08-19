@@ -154,94 +154,77 @@ def _ray_to_polytope_boundary(origin, direction, A, b, atol=1e-12):
     return origin + t * direction
 
 
-def _recursive_axis_bisection_cells(bounds_min, bounds_max, axis_index, count):
-    """Build `count` axis-cycled bisection cells in deterministic order."""
-    if count < 1:
-        return []
+def _slice_polygon_vertices(A, b, omega, atol=1e-9):
+    """Return CCW-ordered (vx, vy) vertices of the polytope cross-section at `omega`."""
+    A2 = A[:, :2]
+    b2 = b - A[:, 2] * omega
 
-    cells = []
-    stack = [(bounds_min.copy(), bounds_max.copy(), axis_index, count)]
-
-    # DFS stack that mirrors recursive left-then-right expansion order.
-    while stack:
-        cell_min, cell_max, cell_axis_index, cell_count = stack.pop()
-
-        if cell_count == 1:
-            cells.append((cell_min, cell_max, cell_axis_index))
+    verts = []
+    for i, j in combinations(range(A2.shape[0]), 2):
+        M = np.vstack([A2[i], A2[j]])
+        if np.isclose(np.linalg.det(M), 0.0, atol=atol):
             continue
 
-        axis = cell_axis_index % 3
-        mid = 0.5 * (cell_min[axis] + cell_max[axis])
+        p = np.linalg.solve(M, np.array([b2[i], b2[j]], dtype=float))
+        if np.all(A2 @ p <= b2 + 1e-8):
+            if not any(np.allclose(p, q, atol=1e-8) for q in verts):
+                verts.append(p)
 
-        left_min = cell_min.copy()
-        left_max = cell_max.copy()
-        left_max[axis] = mid
+    if not verts:
+        return np.empty((0, 2), dtype=float)
 
-        right_min = cell_min.copy()
-        right_max = cell_max.copy()
-        right_min[axis] = mid
-
-        left_count = (cell_count + 1) // 2
-        right_count = cell_count // 2
-
-        next_axis_index = cell_axis_index + 1
-
-        # Push right first so left is processed first (LIFO stack).
-        stack.append((right_min, right_max, next_axis_index, right_count))
-        stack.append((left_min, left_max, next_axis_index, left_count))
-
-    return cells
+    pts = np.array(verts, dtype=float)
+    center = np.mean(pts, axis=0)
+    rel = pts - center
+    return pts[np.argsort(np.arctan2(rel[:, 1], rel[:, 0]))]
 
 
-def sample_boundary_velocities_bisect(model, max_wheel_velocity, total_samples=8):
+def sample_boundary_velocities_bisect(model, max_wheel_velocity, bisect_tier=0, n_spacing=1):
     """
-    Deterministic boundary sampler via recursive axis bisections.
+    Deterministic boundary sampler that bisects only along the omega axis.
 
-    The algorithm recursively bisects the polytope axis-aligned bounds in the
-    order x -> y -> omega, computes each cell center, then casts a ray from the
-    polytope center through that cell center to obtain a boundary point.
+    `bisect_tier` t splits [-omega_max, omega_max] into 2^t sub-intervals per side,
+    yielding omega levels k * omega_max / 2^t for k in (-2^t, 2^t); the degenerate
+    endpoints +/-omega_max are skipped. Each omega slice is a convex polygon in
+    (vx, vy); `n_spacing` evenly spaced points are taken per polygon edge, starting
+    at each vertex, giving 4 * n_spacing points per slice for this polytope.
     """
+    if bisect_tier < 0:
+        raise ValueError("bisect_tier must be non-negative")
+    if n_spacing < 1:
+        raise ValueError("n_spacing must be at least 1")
+
     A, b = _build_inequalities(model, max_wheel_velocity)
     vertices = _compute_polytope_vertices(A, b)
     if vertices.shape[0] == 0:
         raise ValueError("Could not compute polytope vertices for current parameters")
 
-    poly_center = np.mean(vertices, axis=0)
-    bounds_min = np.min(vertices, axis=0)
-    bounds_max = np.max(vertices, axis=0)
-
-    cells = _recursive_axis_bisection_cells(bounds_min, bounds_max, axis_index=0, count=total_samples)
+    omega_max = float(np.max(vertices[:, 2]))
+    divisions = 2 ** bisect_tier
 
     points = []
-    for cell_min, cell_max, axis_index in cells:
-        cell_center = 0.5 * (cell_min + cell_max)
-        direction = cell_center - poly_center
+    for k in range(-(divisions - 1), divisions):
+        omega = omega_max * k / divisions
+        poly = _slice_polygon_vertices(A, b, omega)
+        if poly.shape[0] == 0:
+            continue
 
-        if np.linalg.norm(direction) < 1e-12:
-            direction = np.zeros(3, dtype=float)
-            direction[axis_index % 3] = 1.0
+        if poly.shape[0] < 3:
+            for p in poly:
+                points.append([p[0], p[1], omega])
+            continue
 
-        boundary_pt = _ray_to_polytope_boundary(poly_center, direction, A, b)
-        points.append(boundary_pt)
+        for idx in range(poly.shape[0]):
+            p0 = poly[idx]
+            p1 = poly[(idx + 1) % poly.shape[0]]
+            for s in range(n_spacing):
+                q = p0 + (s / n_spacing) * (p1 - p0)
+                points.append([q[0], q[1], omega])
 
-    boundary_pts = np.array(points, dtype=float)
+    if not points:
+        raise ValueError("Omega-slice sampler produced no boundary points")
 
-    # Deduplicate numerically-close points while preserving deterministic order.
-    deduped = []
-    for pt in boundary_pts:
-        if not any(np.allclose(pt, other, atol=1e-8) for other in deduped):
-            deduped.append(pt)
-
-    # Keep deterministic count contract: return exactly total_samples points.
-    if len(deduped) >= total_samples:
-        return np.array(deduped[:total_samples], dtype=float)
-
-    if len(deduped) == 0:
-        raise ValueError("Deterministic bisection sampler produced no boundary points")
-
-    fill_needed = total_samples - len(deduped)
-    fills = [boundary_pts[i % boundary_pts.shape[0]] for i in range(fill_needed)]
-    return np.vstack([np.array(deduped, dtype=float), np.array(fills, dtype=float)])
+    return np.array(points, dtype=float)
 
 
 def rollout_constant_twist(vx, vy, omega, horizon, dt):
@@ -342,7 +325,14 @@ def main():
         )
     )
     parser.add_argument("--max-wheel-velocity", type=float, default=10.0, help="Wheel-speed limit [rad/s].")
-    parser.add_argument("--samples", type=int, default=8, help="Number of boundary velocity samples.")
+    parser.add_argument("--samples", type=int, default=8, help="Number of boundary velocity samples (random method).")
+    parser.add_argument("--bisect-tier", type=int, default=0, help="Omega-axis bisection tier (bisect method).")
+    parser.add_argument(
+        "--n-spacing",
+        type=int,
+        default=1,
+        help="Evenly spaced points per cross-section edge (bisect method).",
+    )
     parser.add_argument("--horizon", type=float, default=3.0, help="Rollout horizon [s].")
     parser.add_argument("--dt", type=float, default=0.01, help="Integration step [s].")
     parser.add_argument(
@@ -369,6 +359,10 @@ def main():
         raise ValueError("max-wheel-velocity must be positive")
     if args.samples < 1:
         raise ValueError("samples must be at least 1")
+    if args.bisect_tier < 0:
+        raise ValueError("bisect-tier must be non-negative")
+    if args.n_spacing < 1:
+        raise ValueError("n-spacing must be at least 1")
     if args.horizon <= 0.0:
         raise ValueError("horizon must be positive")
     if args.dt <= 0.0:
@@ -388,7 +382,8 @@ def main():
         boundary_velocities = sample_boundary_velocities_bisect(
                     model=model,
                     max_wheel_velocity=args.max_wheel_velocity,
-                    total_samples=args.samples,
+                    bisect_tier=args.bisect_tier,
+                    n_spacing=args.n_spacing,
                 )
 
     plot_boundary_rollouts(
