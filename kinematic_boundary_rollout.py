@@ -280,13 +280,17 @@ def plot_boundary_rollouts(
     """Plot rollouts and chassis rectangles for sampled boundary velocities."""
     fig, ax = plt.subplots(figsize=(10, 10))
 
-    cmap = plt.cm.turbo(np.linspace(0.0, 1.0, boundary_velocities.shape[0]))
+    trajectory_color = "tab:red"
+    rectangle_color = "tab:blue"
+    trajectory_alpha = 0.25
+    final_outline_alpha = 0.9
+    intermediate_outline_alpha = 0.12
 
-    for i, cmd in enumerate(boundary_velocities):
+    for cmd in boundary_velocities:
         vx, vy, omega = cmd
         states = rollout_constant_twist(vx, vy, omega, horizon=horizon, dt=dt)
 
-        ax.plot(states[:, 0], states[:, 1], color=cmap[i], linewidth=1.2, alpha=0.9)
+        ax.plot(states[:, 0], states[:, 1], color=trajectory_color, linewidth=1.2, alpha=trajectory_alpha)
 
         if show_final_only:
             idxs = [states.shape[0] - 1]
@@ -304,8 +308,8 @@ def plot_boundary_rollouts(
                 half_length=model.wb_hlength,
                 half_width=model.wb_hwidth,
             )
-            alpha = 0.12 if (not show_final_only and j < len(idxs) - 1) else 0.35
-            poly = Polygon(corners, closed=True, fill=False, edgecolor=cmap[i], linewidth=0.9, alpha=alpha)
+            alpha = intermediate_outline_alpha if (not show_final_only and j < len(idxs) - 1) else final_outline_alpha
+            poly = Polygon(corners, closed=True, fill=False, edgecolor=rectangle_color, linewidth=0.9, alpha=alpha)
             ax.add_patch(poly)
 
     ax.set_title("Boundary-Velocity Rollouts with Oriented Chassis Footprint")
