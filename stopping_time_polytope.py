@@ -21,6 +21,7 @@ with the convention n_i · x <= b_i).  This is the Minkowski functional of Z
 evaluated at -v0, computed without any LP.
 """
 import argparse
+import sys
 from itertools import product
 
 import matplotlib.pyplot as plt
@@ -281,4 +282,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        sys.exit(130)

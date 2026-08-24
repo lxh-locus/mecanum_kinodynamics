@@ -11,6 +11,7 @@ zonotope evaluated at -v0 (see stopping_distance_polytope.py); the applied
 body acceleration is then the constant -v0 / t_stop.
 """
 import argparse
+import sys
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -213,4 +214,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        sys.exit(130)

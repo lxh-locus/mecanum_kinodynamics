@@ -29,6 +29,7 @@ where (n_i, d_i) are the half-space equations of Z (scipy convention:
 n_i · x + d_i <= 0).
 """
 import argparse
+import sys
 from itertools import product
 
 import matplotlib.pyplot as plt
@@ -302,4 +303,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        sys.exit(130)

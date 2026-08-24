@@ -8,6 +8,7 @@ A second figure shows the truncated 3D polytope (boundary patches and
 vertices), similar to the plot in kinematic_velocity_limit_box.py.
 """
 import argparse
+import sys
 from itertools import combinations
 
 import matplotlib.pyplot as plt
@@ -109,33 +110,8 @@ def _build_face_polygons(vertices, A, b, atol=1e-8):
     return faces
 
 
-def _sample_points_on_face(face_points, samples, rng):
-    """Sample points approximately uniformly on a convex face polygon."""
-    center = np.mean(face_points, axis=0)
-    sampled = []
-
-    for i in range(face_points.shape[0]):
-        p0 = face_points[i]
-        p1 = face_points[(i + 1) % face_points.shape[0]]
-
-        # Sample barycentric coordinates over triangle (center, p0, p1).
-        for _ in range(max(1, samples // face_points.shape[0])):
-            r1 = np.sqrt(rng.random())
-            r2 = rng.random()
-            a = 1.0 - r1
-            b = r1 * (1.0 - r2)
-            c = r1 * r2
-            sampled.append(a * center + b * p0 + c * p1)
-
-    if len(sampled) == 0:
-        return np.empty((0, 3), dtype=float)
-    return np.array(sampled, dtype=float)
-
-
-def sample_boundary_velocities_random(
-    model, max_wheel_velocity, vx_range, vy_range, omega_range, total_samples=8, seed=0
-):
-    """Sample [vx, vy, omega] commands on the truncated kinematic polytope boundary."""
+def _polytope_faces(model, max_wheel_velocity, vx_range, vy_range, omega_range):
+    """Compute vertices and ordered face polygons for the truncated polytope."""
     A, b = _build_inequalities(model, max_wheel_velocity, vx_range, vy_range, omega_range)
     vertices = _compute_polytope_vertices(A, b)
     if vertices.shape[0] == 0:
@@ -145,104 +121,52 @@ def sample_boundary_velocities_random(
     if len(faces) == 0:
         raise ValueError("Could not compute polytope boundary faces")
 
-    rng = np.random.default_rng(seed)
+    return vertices, faces
 
-    # Split requested samples across faces, then trim to exact count.
-    per_face = max(1, int(np.ceil(total_samples / len(faces))))
-    all_pts = []
-    for face in faces:
-        pts = _sample_points_on_face(face, per_face, rng)
-        if pts.shape[0] > 0:
-            all_pts.append(pts)
 
-    boundary_pts = np.vstack(all_pts)
+def compute_wheel_velocity_limits(model, max_wheel_velocity):
+    """Return (max_vx, max_vy, max_omega) reachable from `max_wheel_velocity` alone."""
+    l_plus_w = model.wb_hlength + model.wb_hwidth
+    radius = model.wheel_radius
+    max_vx = radius * max_wheel_velocity
+    max_vy = radius * max_wheel_velocity
+    max_omega = radius * max_wheel_velocity / l_plus_w
+    return max_vx, max_vy, max_omega
 
-    # Keep unique-ish points and shuffle before truncating.
-    rounded = np.round(boundary_pts, decimals=8)
+
+def compute_truncated_extents(vertices):
+    """Return per-axis (min, max) extents of the truncated polytope's vertices."""
+    return tuple(zip(vertices.min(axis=0), vertices.max(axis=0)))
+
+
+def sample_boundary_velocities(vertices, faces, sampling_degree=0):
+    """
+    Sample [vx, vy, omega] points on the truncated polytope surface.
+
+    Degree 0 yields the polytope vertices. Degree d >= 1 additionally yields,
+    for every face, that face's contour scaled in-plane towards its centroid
+    by each new dyadic factor k / 2**d for odd k in [1, 2**d) -- i.e. degree 1
+    adds the 0.5-scaled contour, degree 2 adds the 0.25- and 0.75-scaled
+    contours, degree 3 adds 0.125/0.375/0.625/0.875, and so on. Results from
+    all degrees up to and including `sampling_degree` are combined.
+    """
+    if sampling_degree < 0:
+        raise ValueError("sampling_degree must be non-negative")
+
+    points = [v for v in vertices]
+
+    for d in range(1, sampling_degree + 1):
+        scales = [k / (2 ** d) for k in range(1, 2 ** d, 2)]
+        for scale in scales:
+            for face_pts in faces:
+                center = np.mean(face_pts, axis=0)
+                shrunk = center + scale * (face_pts - center)
+                points.extend(shrunk)
+
+    points = np.array(points, dtype=float)
+    rounded = np.round(points, decimals=8)
     _, unique_idx = np.unique(rounded, axis=0, return_index=True)
-    boundary_pts = boundary_pts[np.sort(unique_idx)]
-    rng.shuffle(boundary_pts)
-
-    if boundary_pts.shape[0] < total_samples:
-        return boundary_pts
-    return boundary_pts[:total_samples]
-
-
-def _slice_polygon_vertices(A, b, omega, atol=1e-9):
-    """Return CCW-ordered (vx, vy) vertices of the polytope cross-section at `omega`."""
-    A2 = A[:, :2]
-    b2 = b - A[:, 2] * omega
-
-    verts = []
-    for i, j in combinations(range(A2.shape[0]), 2):
-        M = np.vstack([A2[i], A2[j]])
-        if np.isclose(np.linalg.det(M), 0.0, atol=atol):
-            continue
-
-        p = np.linalg.solve(M, np.array([b2[i], b2[j]], dtype=float))
-        if np.all(A2 @ p <= b2 + 1e-8):
-            if not any(np.allclose(p, q, atol=1e-8) for q in verts):
-                verts.append(p)
-
-    if not verts:
-        return np.empty((0, 2), dtype=float)
-
-    pts = np.array(verts, dtype=float)
-    center = np.mean(pts, axis=0)
-    rel = pts - center
-    return pts[np.argsort(np.arctan2(rel[:, 1], rel[:, 0]))]
-
-
-def sample_boundary_velocities_bisect(
-    model, max_wheel_velocity, vx_range, vy_range, omega_range, bisect_tier=0, n_spacing=1
-):
-    """
-    Deterministic boundary sampler that bisects only along the omega axis, over
-    the truncated omega range spanned by the (box-limited) polytope's vertices.
-
-    `bisect_tier` t splits the omega span into 2^t sub-intervals per side,
-    yielding 2^(t+1) - 1 interior omega levels; the endpoints of the span are
-    skipped. Each omega slice is a convex polygon in (vx, vy); `n_spacing`
-    evenly spaced points are taken per polygon edge, starting at each vertex.
-    """
-    if bisect_tier < 0:
-        raise ValueError("bisect_tier must be non-negative")
-    if n_spacing < 1:
-        raise ValueError("n_spacing must be at least 1")
-
-    A, b = _build_inequalities(model, max_wheel_velocity, vx_range, vy_range, omega_range)
-    vertices = _compute_polytope_vertices(A, b)
-    if vertices.shape[0] == 0:
-        raise ValueError("Could not compute polytope vertices for current parameters")
-
-    omega_lo = float(np.min(vertices[:, 2]))
-    omega_hi = float(np.max(vertices[:, 2]))
-    divisions = 2 ** bisect_tier
-
-    levels = np.linspace(omega_lo, omega_hi, 2 * divisions + 1)[1:-1]
-
-    points = []
-    for omega in levels:
-        poly = _slice_polygon_vertices(A, b, omega)
-        if poly.shape[0] == 0:
-            continue
-
-        if poly.shape[0] < 3:
-            for p in poly:
-                points.append([p[0], p[1], omega])
-            continue
-
-        for idx in range(poly.shape[0]):
-            p0 = poly[idx]
-            p1 = poly[(idx + 1) % poly.shape[0]]
-            for s in range(n_spacing):
-                q = p0 + (s / n_spacing) * (p1 - p0)
-                points.append([q[0], q[1], omega])
-
-    if not points:
-        raise ValueError("Omega-slice sampler produced no boundary points")
-
-    return np.array(points, dtype=float)
+    return points[np.sort(unique_idx)]
 
 
 def rollout_constant_twist(vx, vy, omega, horizon, dt):
@@ -330,6 +254,15 @@ def plot_boundary_rollouts(
             poly = Polygon(corners, closed=True, fill=False, edgecolor=rectangle_color, linewidth=0.9, alpha=alpha)
             ax.add_patch(poly)
 
+    start_corners = _rectangle_corners(
+        x=0.0,
+        y=0.0,
+        theta=0.0,
+        half_length=model.wb_hlength,
+        half_width=model.wb_hwidth,
+    )
+    ax.add_patch(Polygon(start_corners, closed=True, fill=False, edgecolor="black", linewidth=1.4))
+
     ax.set_title("Boundary-Velocity Rollouts with Oriented Chassis Footprint (Limited)")
     ax.set_xlabel("x [m]")
     ax.set_ylabel("y [m]")
@@ -386,19 +319,23 @@ def plot_truncated_polytope(vertices, faces, vx_range, vy_range, omega_range):
 def main():
     parser = argparse.ArgumentParser(
         description=(
-            "Sample [vx, vy, omega] commands from the velocity-limited kinematic polytope "
-            "boundary, roll out constant-twist trajectories, and plot oriented chassis "
-            "rectangles alongside the truncated 3D polytope."
+            "Sample [vx, vy, omega] points on the surface of the velocity-limited "
+            "kinematic polytope, roll out constant-twist trajectories, and plot oriented "
+            "chassis rectangles alongside the truncated 3D polytope."
         )
     )
     parser.add_argument("--max-wheel-velocity", type=float, default=10.0, help="Wheel-speed limit [rad/s].")
-    parser.add_argument("--samples", type=int, default=8, help="Number of boundary velocity samples (random method).")
-    parser.add_argument("--bisect-tier", type=int, default=0, help="Omega-axis bisection tier (bisect method).")
     parser.add_argument(
-        "--n-spacing",
+        "--sampling-degree",
         type=int,
-        default=1,
-        help="Evenly spaced points per cross-section edge (bisect method).",
+        default=0,
+        help=(
+            "Surface sampling degree. Degree 0 samples only the polytope vertices. "
+            "Degree d also samples each face's contour shrunk (in-plane, towards its "
+            "centroid) by every new dyadic factor k/2**d for odd k, i.e. degree 1 adds "
+            "the 0.5-scaled contour, degree 2 adds 0.25/0.75, degree 3 adds "
+            "0.125/0.375/0.625/0.875, and so on."
+        ),
     )
     parser.add_argument("--horizon", type=float, default=3.0, help="Rollout horizon [s].")
     parser.add_argument("--dt", type=float, default=0.01, help="Integration step [s].")
@@ -407,13 +344,6 @@ def main():
         type=int,
         default=40,
         help="Draw a chassis rectangle every N trajectory samples.",
-    )
-    parser.add_argument("--seed", type=int, default=0, help="RNG seed for boundary sampling.")
-    parser.add_argument(
-        "--sampling-method",
-        choices=["bisect", "random"],
-        default="bisect",
-        help="Boundary sampling method: deterministic recursive bisection or random face sampling.",
     )
     parser.add_argument(
         "--show-all-rectangles",
@@ -430,50 +360,47 @@ def main():
 
     if args.max_wheel_velocity <= 0.0:
         raise ValueError("max-wheel-velocity must be positive")
-    if args.samples < 1:
-        raise ValueError("samples must be at least 1")
-    if args.bisect_tier < 0:
-        raise ValueError("bisect-tier must be non-negative")
-    if args.n_spacing < 1:
-        raise ValueError("n-spacing must be at least 1")
+    if args.sampling_degree < 0:
+        raise ValueError("sampling-degree must be non-negative")
     if args.horizon <= 0.0:
         raise ValueError("horizon must be positive")
     if args.dt <= 0.0:
         raise ValueError("dt must be positive")
     if args.rectangle_stride < 1:
         raise ValueError("rectangle-stride must be at least 1")
-    if args.vx_min >= args.vx_max:
-        raise ValueError("vx-min must be less than vx-max")
-    if args.vy_min >= args.vy_max:
-        raise ValueError("vy-min must be less than vy-max")
-    if args.omega_min >= args.omega_max:
-        raise ValueError("omega-min must be less than omega-max")
+    if args.vx_min > args.vx_max:
+        raise ValueError("vx-min must be less than or equal to vx-max")
+    if args.vy_min > args.vy_max:
+        raise ValueError("vy-min must be less than or equal to vy-max")
+    if args.omega_min > args.omega_max:
+        raise ValueError("omega-min must be less than or equal to omega-max")
 
     vx_range = (args.vx_min, args.vx_max)
     vy_range = (args.vy_min, args.vy_max)
     omega_range = (args.omega_min, args.omega_max)
 
     model = Mecanum()
-    if args.sampling_method == "random":
-        boundary_velocities = sample_boundary_velocities_random(
-            model=model,
-            max_wheel_velocity=args.max_wheel_velocity,
-            vx_range=vx_range,
-            vy_range=vy_range,
-            omega_range=omega_range,
-            total_samples=args.samples,
-            seed=args.seed,
-        )
-    else:
-        boundary_velocities = sample_boundary_velocities_bisect(
-            model=model,
-            max_wheel_velocity=args.max_wheel_velocity,
-            vx_range=vx_range,
-            vy_range=vy_range,
-            omega_range=omega_range,
-            bisect_tier=args.bisect_tier,
-            n_spacing=args.n_spacing,
-        )
+
+    max_vx, max_vy, max_omega = compute_wheel_velocity_limits(model, args.max_wheel_velocity)
+    print(f"Kinematic body-velocity limits from max-wheel-velocity={args.max_wheel_velocity:g} rad/s:")
+    print(f"  vx    in [{-max_vx:.4f}, {max_vx:.4f}] m/s")
+    print(f"  vy    in [{-max_vy:.4f}, {max_vy:.4f}] m/s")
+    print(f"  omega in [{-max_omega:.4f}, {max_omega:.4f}] rad/s")
+
+    print("User-requested vx/vy/omega bounds:")
+    print(f"  vx    in [{vx_range[0]:.4f}, {vx_range[1]:.4f}] m/s")
+    print(f"  vy    in [{vy_range[0]:.4f}, {vy_range[1]:.4f}] m/s")
+    print(f"  omega in [{omega_range[0]:.4f}, {omega_range[1]:.4f}] rad/s")
+
+    vertices, faces = _polytope_faces(model, args.max_wheel_velocity, vx_range, vy_range, omega_range)
+
+    (vx_lo, vx_hi), (vy_lo, vy_hi), (omega_lo, omega_hi) = compute_truncated_extents(vertices)
+    print("Truncated polytope extents (wheel limit intersected with requested vx/vy/omega bounds):")
+    print(f"  vx    in [{vx_lo:.4f}, {vx_hi:.4f}] m/s")
+    print(f"  vy    in [{vy_lo:.4f}, {vy_hi:.4f}] m/s")
+    print(f"  omega in [{omega_lo:.4f}, {omega_hi:.4f}] rad/s")
+
+    boundary_velocities = sample_boundary_velocities(vertices, faces, sampling_degree=args.sampling_degree)
 
     plot_boundary_rollouts(
         model=model,
@@ -484,13 +411,13 @@ def main():
         show_final_only=(not args.show_all_rectangles),
     )
 
-    A, b = _build_inequalities(model, args.max_wheel_velocity, vx_range, vy_range, omega_range)
-    vertices = _compute_polytope_vertices(A, b)
-    faces = _build_face_polygons(vertices, A, b)
     plot_truncated_polytope(vertices, faces, vx_range, vy_range, omega_range)
 
     plt.show()
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        sys.exit(130)
