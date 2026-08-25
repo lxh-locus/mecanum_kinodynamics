@@ -169,94 +169,6 @@ def sample_boundary_velocities(vertices, faces, sampling_degree=0):
     return points[np.sort(unique_idx)]
 
 
-def _planar_polygon_area(pts):
-    """Area of a planar (possibly non-convex-safe) polygon given as 3D points."""
-    n = pts.shape[0]
-    total = np.zeros(3, dtype=float)
-    for i in range(n):
-        total += np.cross(pts[i], pts[(i + 1) % n])
-    return 0.5 * np.linalg.norm(total)
-
-
-def _split_polygon_by_line(face_pts, point, direction, normal):
-    """Split a convex, planar, ordered polygon by the infinite line through
-    `point` with in-plane `direction`. Returns (p1, p2, area_a, area_b) for
-    the two crossing points and the areas of the two resulting halves, or
-    None if the line does not cross exactly two edges."""
-    n = face_pts.shape[0]
-    values = np.array([np.dot(normal, np.cross(direction, p - point)) for p in face_pts])
-    if np.any(np.abs(values) < 1e-9):
-        return None
-
-    signs = np.sign(values)
-    crossings = []
-    for i in range(n):
-        j = (i + 1) % n
-        if signs[i] != signs[j]:
-            t = values[i] / (values[i] - values[j])
-            crossings.append((i, face_pts[i] + t * (face_pts[j] - face_pts[i])))
-
-    if len(crossings) != 2:
-        return None
-
-    (i1, p1), (i2, p2) = crossings
-    if i1 > i2:
-        i1, p1, i2, p2 = i2, p2, i1, p1
-
-    poly_a = np.vstack([p1[np.newaxis, :], face_pts[i1 + 1 : i2 + 1], p2[np.newaxis, :]])
-    poly_b = np.vstack([p2[np.newaxis, :], face_pts[i2 + 1 :], face_pts[: i1 + 1], p1[np.newaxis, :]])
-    return p1, p2, _planar_polygon_area(poly_a), _planar_polygon_area(poly_b)
-
-
-def _bisecting_line_for_face(face_pts, normal, angle_samples=180, origin_bias=0.25):
-    """Find a line through the face centroid that splits its area
-    approximately evenly, biased towards lines radial from the world origin.
-
-    Returns (p1, p2) -- the line's two intersection points with the face
-    boundary -- chosen by a grid search over in-plane angles that trades off
-    area balance against alignment with the ray from (0, 0, 0) through the
-    face centroid.
-    """
-    n = face_pts.shape[0]
-    centroid = np.mean(face_pts, axis=0)
-    total_area = max(_planar_polygon_area(face_pts), 1e-12)
-
-    ref = np.array([1.0, 0.0, 0.0])
-    if abs(np.dot(normal, ref)) > 0.95:
-        ref = np.array([0.0, 1.0, 0.0])
-    u = np.cross(normal, ref)
-    u = u / np.linalg.norm(u)
-    v = np.cross(normal, u)
-
-    radial_in_plane = centroid - np.dot(centroid, normal) * normal
-    radial_norm = np.linalg.norm(radial_in_plane)
-    theta_radial = np.arctan2(np.dot(radial_in_plane, v), np.dot(radial_in_plane, u)) if radial_norm > 1e-9 else 0.0
-
-    best_cost = None
-    best_pair = None
-    for i in range(angle_samples):
-        theta = np.pi * i / angle_samples
-        direction = np.cos(theta) * u + np.sin(theta) * v
-        result = _split_polygon_by_line(face_pts, centroid, direction, normal)
-        if result is None:
-            continue
-
-        p1, p2, area_a, area_b = result
-        area_imbalance = abs(area_a - area_b) / total_area
-        angular_dist = abs(((theta - theta_radial + np.pi / 2) % np.pi) - np.pi / 2) / (np.pi / 2)
-        cost = area_imbalance + origin_bias * angular_dist
-        if best_cost is None or cost < best_cost:
-            best_cost = cost
-            best_pair = (p1, p2)
-
-    if best_pair is None:
-        # Degenerate fallback: bisect via opposite-edge midpoints.
-        k = n // 2
-        best_pair = (0.5 * (face_pts[0] + face_pts[1]), 0.5 * (face_pts[k % n] + face_pts[(k + 1) % n]))
-
-    return best_pair
-
-
 def _face_normal(face_pts):
     """Return a unit normal for a planar, ordered polygon `face_pts`."""
     v1 = face_pts[1] - face_pts[0]
@@ -279,49 +191,155 @@ def _face_basis(normal):
     return u, v
 
 
-def _ray_polygon_boundary_distance(face_pts, point, direction, normal):
-    """Distance from `point` (assumed interior to convex polygon `face_pts`)
-    to the first edge hit by the ray from `point` along in-plane `direction`."""
+def _project_face_to_2d(face_pts, normal):
+    """Project a planar, ordered 3D polygon into 2D face-local coordinates.
+
+    Returns (anchor, u, v, poly_2d) such that a 2D point `p2` maps back to
+    3D via `anchor + p2[0] * u + p2[1] * v`.
+    """
     u, v = _face_basis(normal)
+    anchor = face_pts[0]
+    rel = face_pts - anchor
+    poly_2d = np.stack([rel @ u, rel @ v], axis=1)
+    return anchor, u, v, poly_2d
 
-    def to2d(p):
-        return np.array([np.dot(p, u), np.dot(p, v)])
 
-    p2 = to2d(point)
-    d2 = np.array([np.dot(direction, u), np.dot(direction, v)])
+def _point_to_2d(point, anchor, u, v):
+    rel = point - anchor
+    return np.array([np.dot(rel, u), np.dot(rel, v)])
 
-    n = face_pts.shape[0]
-    best_t = None
+
+def _points_to_3d(points_2d, anchor, u, v):
+    points_2d = np.asarray(points_2d, dtype=float)
+    return anchor + np.outer(points_2d[:, 0], u) + np.outer(points_2d[:, 1], v)
+
+
+def _polygon_area_2d(poly_2d):
+    """Shoelace area of a 2D polygon."""
+    n = poly_2d.shape[0]
+    total = 0.0
+    for i in range(n):
+        x1, y1 = poly_2d[i]
+        x2, y2 = poly_2d[(i + 1) % n]
+        total += x1 * y2 - x2 * y1
+    return abs(total) / 2.0
+
+
+def _rotate90(v):
+    """Rotate a 2D vector 90 degrees counter-clockwise."""
+    return np.array([-v[1], v[0]])
+
+
+def _line_polygon_intersections_2d(poly_2d, point_2d, direction_2d):
+    """Return the infinite line's crossings of convex polygon `poly_2d`,
+    through `point_2d` along `direction_2d`, as a t-sorted list of
+    (t, point, edge_index). Duplicate hits at a shared vertex are merged."""
+    n = poly_2d.shape[0]
+    hits = []
     for i in range(n):
         j = (i + 1) % n
-        a2 = to2d(face_pts[i])
-        edge2 = to2d(face_pts[j]) - a2
+        a = poly_2d[i]
+        edge = poly_2d[j] - a
 
-        A = np.array([[d2[0], -edge2[0]], [d2[1], -edge2[1]]])
+        A = np.array([[direction_2d[0], -edge[0]], [direction_2d[1], -edge[1]]])
         det = np.linalg.det(A)
         if abs(det) < 1e-12:
             continue
 
-        t, s = np.linalg.solve(A, a2 - p2)
-        if t > 1e-9 and -1e-9 <= s <= 1 + 1e-9:
-            if best_t is None or t < best_t:
-                best_t = t
+        t, s = np.linalg.solve(A, a - point_2d)
+        if -1e-9 <= s <= 1 + 1e-9:
+            hits.append((t, a + s * edge, i))
 
-    if best_t is None:
-        raise ValueError("Ray from point did not intersect the face boundary")
-    return best_t
+    hits.sort(key=lambda hit: hit[0])
+    deduped = []
+    for hit in hits:
+        if deduped and np.allclose(hit[1], deduped[-1][1], atol=1e-9):
+            continue
+        deduped.append(hit)
+    return deduped
 
 
-def _perpendicular_bisect_points(point, direction, arm_length_a, arm_length_b, depth, normal, out_points, face_pts):
-    """Iteratively branch an H-tree-like cross pattern of sample points.
+def _split_polygon_by_line_2d(poly_2d, point_2d, direction_2d):
+    """Split a convex 2D polygon by the infinite line through `point_2d` with
+    `direction_2d`. Returns (p1, p2, area_a, area_b) for the two crossing
+    points and the areas of the two resulting halves, or None if the line
+    does not cross exactly two edges."""
+    hits = _line_polygon_intersections_2d(poly_2d, point_2d, direction_2d)
+    if len(hits) != 2:
+        return None
+
+    (_, p1, i1), (_, p2, i2) = hits
+    if i1 > i2:
+        i1, p1, i2, p2 = i2, p2, i1, p1
+
+    poly_a = np.vstack([p1[np.newaxis, :], poly_2d[i1 + 1 : i2 + 1], p2[np.newaxis, :]])
+    poly_b = np.vstack([p2[np.newaxis, :], poly_2d[i2 + 1 :], poly_2d[: i1 + 1], p1[np.newaxis, :]])
+    return p1, p2, _polygon_area_2d(poly_a), _polygon_area_2d(poly_b)
+
+
+def _bisecting_line_for_face_2d(poly_2d, origin_2d, angle_samples=180, origin_bias=0.25):
+    """Find a line through the face centroid that splits its 2D area
+    approximately evenly, biased towards lines radial from `origin_2d` (the
+    world origin's projection into this face's 2D coordinates).
+
+    Returns (p1, p2) -- the line's two intersection points with the polygon
+    boundary -- chosen by a grid search over angles that trades off area
+    balance against alignment with the ray from `origin_2d` through the
+    face centroid.
+    """
+    n = poly_2d.shape[0]
+    centroid = np.mean(poly_2d, axis=0)
+    total_area = max(_polygon_area_2d(poly_2d), 1e-12)
+
+    radial = centroid - origin_2d
+    radial_norm = np.linalg.norm(radial)
+    theta_radial = np.arctan2(radial[1], radial[0]) if radial_norm > 1e-9 else 0.0
+
+    best_cost = None
+    best_pair = None
+    for i in range(angle_samples):
+        theta = np.pi * i / angle_samples
+        direction = np.array([np.cos(theta), np.sin(theta)])
+        result = _split_polygon_by_line_2d(poly_2d, centroid, direction)
+        if result is None:
+            continue
+
+        p1, p2, area_a, area_b = result
+        area_imbalance = abs(area_a - area_b) / total_area
+        angular_dist = abs(((theta - theta_radial + np.pi / 2) % np.pi) - np.pi / 2) / (np.pi / 2)
+        cost = area_imbalance + origin_bias * angular_dist
+        if best_cost is None or cost < best_cost:
+            best_cost = cost
+            best_pair = (p1, p2)
+
+    if best_pair is None:
+        # Degenerate fallback: bisect via opposite-edge midpoints.
+        k = n // 2
+        best_pair = (0.5 * (poly_2d[0] + poly_2d[1]), 0.5 * (poly_2d[k % n] + poly_2d[(k + 1) % n]))
+
+    return best_pair
+
+
+def _ray_polygon_boundary_distance_2d(poly_2d, point_2d, direction_2d):
+    """Distance from `point_2d` (assumed interior to convex polygon
+    `poly_2d`) to the first edge hit by the ray from `point_2d` along
+    `direction_2d`."""
+    for t, _, _ in _line_polygon_intersections_2d(poly_2d, point_2d, direction_2d):
+        if t > 1e-9:
+            return t
+    raise ValueError("Ray from point did not intersect the face boundary")
+
+
+def _perpendicular_bisect_points_2d(point, direction, arm_length_a, arm_length_b, depth, poly_2d, out_points):
+    """Iteratively branch an H-tree-like cross pattern of 2D sample points.
 
     At each step, a new line through the current point, perpendicular to the
     current direction, is split at that point into two arms of length
     `arm_length_a` and `arm_length_b` (which need not be equal); the centers
     of those two arms become new sample points. Each new point then branches
     again, perpendicular to the line that produced it, with its own arm
-    lengths ray-cast from that point to the face boundary, until `depth` is
-    exhausted.
+    lengths ray-cast from that point to the polygon boundary, until `depth`
+    is exhausted.
     """
     stack = [(point, direction, arm_length_a, arm_length_b, depth)]
     while stack:
@@ -329,25 +347,16 @@ def _perpendicular_bisect_points(point, direction, arm_length_a, arm_length_b, d
         if d <= 0:
             continue
 
-        perp = np.cross(normal, dirn)
-        perp = perp / np.linalg.norm(perp)
-
-        p1 = pt + (len_a / 2.0) * perp
-        p2 = pt - (len_b / 2.0) * perp
-        out_points.append(p1)
-        out_points.append(p2)
+        perp = _rotate90(dirn)
+        children = [pt + (len_a / 2.0) * perp, pt - (len_b / 2.0) * perp]
+        out_points.extend(children)
 
         if d - 1 > 0:
-            next_perp = np.cross(normal, perp)
-            next_perp = next_perp / np.linalg.norm(next_perp)
-
-            len_a1 = _ray_polygon_boundary_distance(face_pts, p1, next_perp, normal)
-            len_b1 = _ray_polygon_boundary_distance(face_pts, p1, -next_perp, normal)
-            stack.append((p1, perp, len_a1, len_b1, d - 1))
-
-            len_a2 = _ray_polygon_boundary_distance(face_pts, p2, next_perp, normal)
-            len_b2 = _ray_polygon_boundary_distance(face_pts, p2, -next_perp, normal)
-            stack.append((p2, perp, len_a2, len_b2, d - 1))
+            next_perp = _rotate90(perp)
+            for child_pt in children:
+                next_len_a = _ray_polygon_boundary_distance_2d(poly_2d, child_pt, next_perp)
+                next_len_b = _ray_polygon_boundary_distance_2d(poly_2d, child_pt, -next_perp)
+                stack.append((child_pt, perp, next_len_a, next_len_b, d - 1))
 
 
 def sample_boundary_velocities_bisected(vertices, faces, sampling_degree=0):
@@ -355,14 +364,19 @@ def sample_boundary_velocities_bisected(vertices, faces, sampling_degree=0):
     Sample [vx, vy, omega] points on the truncated polytope surface using a
     branching, H-tree-like cross pattern per face.
 
+    Each face is projected into its own 2D in-plane coordinates; the entire
+    bisection process runs there, and the resulting points are projected
+    back into 3D.
+
     Degree 0 yields only the polytope vertices. Degree 1 additionally yields,
     for every face, the midpoint of a line through the face centroid that
     splits its area approximately evenly, biased towards lines radial from
     the world origin. Degree d >= 2 then branches from that point: a new
-    line, perpendicular to its parent and half as long, is bisected at the
-    parent point, and the centers of its two halves become new points; each
-    of those branches again the same way, perpendicular to its own parent
-    line, down to depth d (i.e. 2**d - 1 points per face at degree d).
+    line, perpendicular to its parent, is bisected at the parent point with
+    each half's length ray-cast to the face boundary (so the two halves need
+    not match), and the centers of those halves become new points; each of
+    those branches again the same way, perpendicular to its own parent line,
+    down to depth d (i.e. 2**d - 1 points per face at degree d).
     """
     if sampling_degree < 0:
         raise ValueError("sampling_degree must be non-negative")
@@ -375,25 +389,30 @@ def sample_boundary_velocities_bisected(vertices, faces, sampling_degree=0):
             continue
 
         normal = _face_normal(face_pts)
-        edge_mid_0, edge_mid_k = _bisecting_line_for_face(face_pts, normal)
+        anchor, u, v, poly_2d = _project_face_to_2d(face_pts, normal)
+        origin_2d = _point_to_2d(np.zeros(3), anchor, u, v)
+
+        edge_mid_0, edge_mid_k = _bisecting_line_for_face_2d(poly_2d, origin_2d)
         center = 0.5 * (edge_mid_0 + edge_mid_k)
-        points.append(center)
+        points_2d = [center]
 
         if sampling_degree >= 2:
             direction = edge_mid_k - edge_mid_0
             direction = direction / np.linalg.norm(direction)
-            perp = np.cross(normal, direction)
-            perp = perp / np.linalg.norm(perp)
-            arm_length_a = _ray_polygon_boundary_distance(face_pts, center, perp, normal)
-            arm_length_b = _ray_polygon_boundary_distance(face_pts, center, -perp, normal)
-            _perpendicular_bisect_points(
-                center, direction, arm_length_a, arm_length_b, sampling_degree - 1, normal, points, face_pts
+            perp = _rotate90(direction)
+            arm_length_a = _ray_polygon_boundary_distance_2d(poly_2d, center, perp)
+            arm_length_b = _ray_polygon_boundary_distance_2d(poly_2d, center, -perp)
+            _perpendicular_bisect_points_2d(
+                center, direction, arm_length_a, arm_length_b, sampling_degree - 1, poly_2d, points_2d
             )
+
+        points.extend(_points_to_3d(points_2d, anchor, u, v))
 
     points = np.array(points, dtype=float)
     rounded = np.round(points, decimals=8)
     _, unique_idx = np.unique(rounded, axis=0, return_index=True)
     return points[np.sort(unique_idx)]
+
 
 
 def rollout_constant_twist(vx, vy, omega, horizon, dt):
