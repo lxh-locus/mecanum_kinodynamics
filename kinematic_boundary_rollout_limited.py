@@ -147,13 +147,22 @@ def sample_boundary_velocities(vertices, faces, sampling_degree=0):
     for every face, that face's contour scaled in-plane towards its centroid
     by each new dyadic factor k / 2**d for odd k in [1, 2**d) -- i.e. degree 1
     adds the 0.5-scaled contour, degree 2 adds the 0.25- and 0.75-scaled
-    contours, degree 3 adds 0.125/0.375/0.625/0.875, and so on. Results from
-    all degrees up to and including `sampling_degree` are combined.
+    contours, degree 3 adds 0.125/0.375/0.625/0.875, and so on -- plus the
+    same dyadic bisection points along every face edge. Results from all
+    degrees up to and including `sampling_degree` are combined, and points
+    from edges shared between adjacent faces are deduplicated.
     """
     if sampling_degree < 0:
         raise ValueError("sampling_degree must be non-negative")
 
     points = [v for v in vertices]
+
+    if sampling_degree >= 1:
+        for face_pts in faces:
+            n = face_pts.shape[0]
+            for i in range(n):
+                j = (i + 1) % n
+                points.extend(_edge_bisection_points(face_pts[i], face_pts[j], sampling_degree))
 
     for d in range(1, sampling_degree + 1):
         scales = [k / (2 ** d) for k in range(1, 2 ** d, 2)]
@@ -359,24 +368,44 @@ def _perpendicular_bisect_points_2d(point, direction, arm_length_a, arm_length_b
                 stack.append((child_pt, perp, next_len_a, next_len_b, d - 1))
 
 
+def _edge_bisection_points(p_start, p_end, sampling_degree):
+    """Return dyadic bisection points along segment [p_start, p_end].
+
+    Degree 1 yields the edge midpoint. Degree d >= 2 additionally yields the
+    midpoint of each sub-segment from the previous degree, i.e. the points
+    at fraction k / 2**d for odd k in [1, 2**d), for every degree up to and
+    including `sampling_degree`.
+    """
+    points = []
+    for d in range(1, sampling_degree + 1):
+        for k in range(1, 2 ** d, 2):
+            frac = k / (2 ** d)
+            points.append(p_start + frac * (p_end - p_start))
+    return points
+
+
 def sample_boundary_velocities_bisected(vertices, faces, sampling_degree=0):
     """
     Sample [vx, vy, omega] points on the truncated polytope surface using a
-    branching, H-tree-like cross pattern per face.
+    branching, H-tree-like cross pattern per face plus dyadic bisection of
+    each face's edges.
 
     Each face is projected into its own 2D in-plane coordinates; the entire
-    bisection process runs there, and the resulting points are projected
-    back into 3D.
+    interior-bisection process runs there, and the resulting points are
+    projected back into 3D. Edge points are computed directly in 3D. Points
+    from edges shared between adjacent faces are deduplicated.
 
     Degree 0 yields only the polytope vertices. Degree 1 additionally yields,
     for every face, the midpoint of a line through the face centroid that
-    splits its area approximately evenly, biased towards lines radial from
-    the world origin. Degree d >= 2 then branches from that point: a new
-    line, perpendicular to its parent, is bisected at the parent point with
-    each half's length ray-cast to the face boundary (so the two halves need
-    not match), and the centers of those halves become new points; each of
-    those branches again the same way, perpendicular to its own parent line,
-    down to depth d (i.e. 2**d - 1 points per face at degree d).
+    splits its area approximately evenly (biased towards lines radial from
+    the world origin), plus the midpoint of every edge. Degree d >= 2 then
+    branches from the interior point: a new line, perpendicular to its
+    parent, is bisected at the parent point with each half's length ray-cast
+    to the face boundary (so the two halves need not match), and the centers
+    of those halves become new points; each of those branches again the same
+    way, perpendicular to its own parent line, down to depth d. Each edge is
+    likewise recursively bisected down to depth d (i.e. 2**d - 1 interior and
+    2**d - 1 edge points per face edge at degree d).
     """
     if sampling_degree < 0:
         raise ValueError("sampling_degree must be non-negative")
@@ -387,6 +416,10 @@ def sample_boundary_velocities_bisected(vertices, faces, sampling_degree=0):
         n = face_pts.shape[0]
         if sampling_degree < 1 or n < 3:
             continue
+
+        for i in range(n):
+            j = (i + 1) % n
+            points.extend(_edge_bisection_points(face_pts[i], face_pts[j], sampling_degree))
 
         normal = _face_normal(face_pts)
         anchor, u, v, poly_2d = _project_face_to_2d(face_pts, normal)
