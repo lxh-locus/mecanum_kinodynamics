@@ -217,6 +217,7 @@ def main():
     print(f"  omega in [{omega_lo:.4f}, {omega_hi:.4f}] rad/s")
 
     boundary_velocities = sample_boundary_velocities(vertices, faces, sampling_degree=args.sampling_degree)
+    extra_points = boundary_velocities[vertices.shape[0]:]
 
     accel_hull = _compute_acceleration_zonotope(model, args.max_torque)
 
@@ -229,7 +230,7 @@ def main():
         show_final_only=(not args.show_all_rectangles),
     )
 
-    plot_truncated_polytope(vertices, faces, vx_range, vy_range, omega_range)
+    plot_truncated_polytope(vertices, faces, vx_range, vy_range, omega_range, extra_points=extra_points)
 
     plt.show()
 

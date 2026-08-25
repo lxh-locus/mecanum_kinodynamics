@@ -271,8 +271,12 @@ def plot_boundary_rollouts(
     plt.tight_layout()
 
 
-def plot_truncated_polytope(vertices, faces, vx_range, vy_range, omega_range):
-    """Plot the truncated 3D kinematic polytope's boundary patches and vertices."""
+def plot_truncated_polytope(vertices, faces, vx_range, vy_range, omega_range, extra_points=None):
+    """Plot the truncated 3D kinematic polytope's boundary patches and vertices.
+
+    `extra_points`, if given, are additional sampled points (e.g. from
+    --sampling-degree) drawn in gray with alpha=0.5.
+    """
     fig = plt.figure(figsize=(8, 8))
     ax = fig.add_subplot(111, projection="3d")
 
@@ -300,6 +304,12 @@ def plot_truncated_polytope(vertices, faces, vx_range, vy_range, omega_range):
         ax.add_collection3d(patch)
 
     ax.scatter(vertices[:, 0], vertices[:, 1], vertices[:, 2], s=14, c="black", alpha=0.8)
+
+    if extra_points is not None and len(extra_points) > 0:
+        extra_points = np.asarray(extra_points, dtype=float)
+        ax.scatter(
+            extra_points[:, 0], extra_points[:, 1], extra_points[:, 2], s=10, c="gray", alpha=0.7
+        )
 
     ax.set_title("Velocity-Limited Kinematic Polytope")
     ax.set_xlabel("vx [m/s]")
@@ -401,6 +411,7 @@ def main():
     print(f"  omega in [{omega_lo:.4f}, {omega_hi:.4f}] rad/s")
 
     boundary_velocities = sample_boundary_velocities(vertices, faces, sampling_degree=args.sampling_degree)
+    extra_points = boundary_velocities[vertices.shape[0]:]
 
     plot_boundary_rollouts(
         model=model,
@@ -411,7 +422,7 @@ def main():
         show_final_only=(not args.show_all_rectangles),
     )
 
-    plot_truncated_polytope(vertices, faces, vx_range, vy_range, omega_range)
+    plot_truncated_polytope(vertices, faces, vx_range, vy_range, omega_range, extra_points=extra_points)
 
     plt.show()
 
