@@ -22,6 +22,7 @@ from kinematic_boundary_rollout_limited import (
     compute_wheel_velocity_limits,
     plot_truncated_polytope,
     sample_boundary_velocities,
+    sample_boundary_velocities_bisected,
 )
 from mecanum_common import Mecanum
 from stopping_distance_polytope import _compute_acceleration_zonotope, _minkowski_functional
@@ -154,6 +155,16 @@ def main():
             "0.125/0.375/0.625/0.875, and so on."
         ),
     )
+    parser.add_argument(
+        "--sampling-method",
+        choices=["shrink", "bisect"],
+        default="shrink",
+        help=(
+            "Face sampling method for --sampling-degree > 0: 'shrink' scales each "
+            "face's contour towards its centroid; 'bisect' recursively bisects each "
+            "face and samples the midpoint of each bisecting line."
+        ),
+    )
     parser.add_argument("--dt", type=float, default=0.005, help="Integration step [s].")
     parser.add_argument(
         "--rectangle-stride",
@@ -216,7 +227,8 @@ def main():
     print(f"  vy    in [{vy_lo:.4f}, {vy_hi:.4f}] m/s")
     print(f"  omega in [{omega_lo:.4f}, {omega_hi:.4f}] rad/s")
 
-    boundary_velocities = sample_boundary_velocities(vertices, faces, sampling_degree=args.sampling_degree)
+    sampling_fn = sample_boundary_velocities if args.sampling_method == "shrink" else sample_boundary_velocities_bisected
+    boundary_velocities = sampling_fn(vertices, faces, sampling_degree=args.sampling_degree)
     extra_points = boundary_velocities[vertices.shape[0]:]
 
     accel_hull = _compute_acceleration_zonotope(model, args.max_torque)

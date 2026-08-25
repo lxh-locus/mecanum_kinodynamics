@@ -169,6 +169,233 @@ def sample_boundary_velocities(vertices, faces, sampling_degree=0):
     return points[np.sort(unique_idx)]
 
 
+def _planar_polygon_area(pts):
+    """Area of a planar (possibly non-convex-safe) polygon given as 3D points."""
+    n = pts.shape[0]
+    total = np.zeros(3, dtype=float)
+    for i in range(n):
+        total += np.cross(pts[i], pts[(i + 1) % n])
+    return 0.5 * np.linalg.norm(total)
+
+
+def _split_polygon_by_line(face_pts, point, direction, normal):
+    """Split a convex, planar, ordered polygon by the infinite line through
+    `point` with in-plane `direction`. Returns (p1, p2, area_a, area_b) for
+    the two crossing points and the areas of the two resulting halves, or
+    None if the line does not cross exactly two edges."""
+    n = face_pts.shape[0]
+    values = np.array([np.dot(normal, np.cross(direction, p - point)) for p in face_pts])
+    if np.any(np.abs(values) < 1e-9):
+        return None
+
+    signs = np.sign(values)
+    crossings = []
+    for i in range(n):
+        j = (i + 1) % n
+        if signs[i] != signs[j]:
+            t = values[i] / (values[i] - values[j])
+            crossings.append((i, face_pts[i] + t * (face_pts[j] - face_pts[i])))
+
+    if len(crossings) != 2:
+        return None
+
+    (i1, p1), (i2, p2) = crossings
+    if i1 > i2:
+        i1, p1, i2, p2 = i2, p2, i1, p1
+
+    poly_a = np.vstack([p1[np.newaxis, :], face_pts[i1 + 1 : i2 + 1], p2[np.newaxis, :]])
+    poly_b = np.vstack([p2[np.newaxis, :], face_pts[i2 + 1 :], face_pts[: i1 + 1], p1[np.newaxis, :]])
+    return p1, p2, _planar_polygon_area(poly_a), _planar_polygon_area(poly_b)
+
+
+def _bisecting_line_for_face(face_pts, normal, angle_samples=180, origin_bias=0.25):
+    """Find a line through the face centroid that splits its area
+    approximately evenly, biased towards lines radial from the world origin.
+
+    Returns (p1, p2) -- the line's two intersection points with the face
+    boundary -- chosen by a grid search over in-plane angles that trades off
+    area balance against alignment with the ray from (0, 0, 0) through the
+    face centroid.
+    """
+    n = face_pts.shape[0]
+    centroid = np.mean(face_pts, axis=0)
+    total_area = max(_planar_polygon_area(face_pts), 1e-12)
+
+    ref = np.array([1.0, 0.0, 0.0])
+    if abs(np.dot(normal, ref)) > 0.95:
+        ref = np.array([0.0, 1.0, 0.0])
+    u = np.cross(normal, ref)
+    u = u / np.linalg.norm(u)
+    v = np.cross(normal, u)
+
+    radial_in_plane = centroid - np.dot(centroid, normal) * normal
+    radial_norm = np.linalg.norm(radial_in_plane)
+    theta_radial = np.arctan2(np.dot(radial_in_plane, v), np.dot(radial_in_plane, u)) if radial_norm > 1e-9 else 0.0
+
+    best_cost = None
+    best_pair = None
+    for i in range(angle_samples):
+        theta = np.pi * i / angle_samples
+        direction = np.cos(theta) * u + np.sin(theta) * v
+        result = _split_polygon_by_line(face_pts, centroid, direction, normal)
+        if result is None:
+            continue
+
+        p1, p2, area_a, area_b = result
+        area_imbalance = abs(area_a - area_b) / total_area
+        angular_dist = abs(((theta - theta_radial + np.pi / 2) % np.pi) - np.pi / 2) / (np.pi / 2)
+        cost = area_imbalance + origin_bias * angular_dist
+        if best_cost is None or cost < best_cost:
+            best_cost = cost
+            best_pair = (p1, p2)
+
+    if best_pair is None:
+        # Degenerate fallback: bisect via opposite-edge midpoints.
+        k = n // 2
+        best_pair = (0.5 * (face_pts[0] + face_pts[1]), 0.5 * (face_pts[k % n] + face_pts[(k + 1) % n]))
+
+    return best_pair
+
+
+def _face_normal(face_pts):
+    """Return a unit normal for a planar, ordered polygon `face_pts`."""
+    v1 = face_pts[1] - face_pts[0]
+    for i in range(2, face_pts.shape[0]):
+        n = np.cross(v1, face_pts[i] - face_pts[0])
+        norm = np.linalg.norm(n)
+        if norm > 1e-12:
+            return n / norm
+    raise ValueError("Could not compute a face normal; face points are collinear")
+
+
+def _face_basis(normal):
+    """Return an orthonormal in-plane (u, v) basis for a plane with `normal`."""
+    ref = np.array([1.0, 0.0, 0.0])
+    if abs(np.dot(normal, ref)) > 0.95:
+        ref = np.array([0.0, 1.0, 0.0])
+    u = np.cross(normal, ref)
+    u = u / np.linalg.norm(u)
+    v = np.cross(normal, u)
+    return u, v
+
+
+def _ray_polygon_boundary_distance(face_pts, point, direction, normal):
+    """Distance from `point` (assumed interior to convex polygon `face_pts`)
+    to the first edge hit by the ray from `point` along in-plane `direction`."""
+    u, v = _face_basis(normal)
+
+    def to2d(p):
+        return np.array([np.dot(p, u), np.dot(p, v)])
+
+    p2 = to2d(point)
+    d2 = np.array([np.dot(direction, u), np.dot(direction, v)])
+
+    n = face_pts.shape[0]
+    best_t = None
+    for i in range(n):
+        j = (i + 1) % n
+        a2 = to2d(face_pts[i])
+        edge2 = to2d(face_pts[j]) - a2
+
+        A = np.array([[d2[0], -edge2[0]], [d2[1], -edge2[1]]])
+        det = np.linalg.det(A)
+        if abs(det) < 1e-12:
+            continue
+
+        t, s = np.linalg.solve(A, a2 - p2)
+        if t > 1e-9 and -1e-9 <= s <= 1 + 1e-9:
+            if best_t is None or t < best_t:
+                best_t = t
+
+    if best_t is None:
+        raise ValueError("Ray from point did not intersect the face boundary")
+    return best_t
+
+
+def _perpendicular_bisect_points(point, direction, arm_length_a, arm_length_b, depth, normal, out_points, face_pts):
+    """Iteratively branch an H-tree-like cross pattern of sample points.
+
+    At each step, a new line through the current point, perpendicular to the
+    current direction, is split at that point into two arms of length
+    `arm_length_a` and `arm_length_b` (which need not be equal); the centers
+    of those two arms become new sample points. Each new point then branches
+    again, perpendicular to the line that produced it, with its own arm
+    lengths ray-cast from that point to the face boundary, until `depth` is
+    exhausted.
+    """
+    stack = [(point, direction, arm_length_a, arm_length_b, depth)]
+    while stack:
+        pt, dirn, len_a, len_b, d = stack.pop()
+        if d <= 0:
+            continue
+
+        perp = np.cross(normal, dirn)
+        perp = perp / np.linalg.norm(perp)
+
+        p1 = pt + (len_a / 2.0) * perp
+        p2 = pt - (len_b / 2.0) * perp
+        out_points.append(p1)
+        out_points.append(p2)
+
+        if d - 1 > 0:
+            next_perp = np.cross(normal, perp)
+            next_perp = next_perp / np.linalg.norm(next_perp)
+
+            len_a1 = _ray_polygon_boundary_distance(face_pts, p1, next_perp, normal)
+            len_b1 = _ray_polygon_boundary_distance(face_pts, p1, -next_perp, normal)
+            stack.append((p1, perp, len_a1, len_b1, d - 1))
+
+            len_a2 = _ray_polygon_boundary_distance(face_pts, p2, next_perp, normal)
+            len_b2 = _ray_polygon_boundary_distance(face_pts, p2, -next_perp, normal)
+            stack.append((p2, perp, len_a2, len_b2, d - 1))
+
+
+def sample_boundary_velocities_bisected(vertices, faces, sampling_degree=0):
+    """
+    Sample [vx, vy, omega] points on the truncated polytope surface using a
+    branching, H-tree-like cross pattern per face.
+
+    Degree 0 yields only the polytope vertices. Degree 1 additionally yields,
+    for every face, the midpoint of a line through the face centroid that
+    splits its area approximately evenly, biased towards lines radial from
+    the world origin. Degree d >= 2 then branches from that point: a new
+    line, perpendicular to its parent and half as long, is bisected at the
+    parent point, and the centers of its two halves become new points; each
+    of those branches again the same way, perpendicular to its own parent
+    line, down to depth d (i.e. 2**d - 1 points per face at degree d).
+    """
+    if sampling_degree < 0:
+        raise ValueError("sampling_degree must be non-negative")
+
+    points = [v for v in vertices]
+
+    for face_pts in faces:
+        n = face_pts.shape[0]
+        if sampling_degree < 1 or n < 3:
+            continue
+
+        normal = _face_normal(face_pts)
+        edge_mid_0, edge_mid_k = _bisecting_line_for_face(face_pts, normal)
+        center = 0.5 * (edge_mid_0 + edge_mid_k)
+        points.append(center)
+
+        if sampling_degree >= 2:
+            direction = edge_mid_k - edge_mid_0
+            direction = direction / np.linalg.norm(direction)
+            perp = np.cross(normal, direction)
+            perp = perp / np.linalg.norm(perp)
+            arm_length_a = _ray_polygon_boundary_distance(face_pts, center, perp, normal)
+            arm_length_b = _ray_polygon_boundary_distance(face_pts, center, -perp, normal)
+            _perpendicular_bisect_points(
+                center, direction, arm_length_a, arm_length_b, sampling_degree - 1, normal, points, face_pts
+            )
+
+    points = np.array(points, dtype=float)
+    rounded = np.round(points, decimals=8)
+    _, unique_idx = np.unique(rounded, axis=0, return_index=True)
+    return points[np.sort(unique_idx)]
+
+
 def rollout_constant_twist(vx, vy, omega, horizon, dt):
     """Roll out a planar pose trajectory from constant body-frame twist."""
     steps = int(np.ceil(horizon / dt))
@@ -347,6 +574,16 @@ def main():
             "0.125/0.375/0.625/0.875, and so on."
         ),
     )
+    parser.add_argument(
+        "--sampling-method",
+        choices=["shrink", "bisect"],
+        default="shrink",
+        help=(
+            "Face sampling method for --sampling-degree > 0: 'shrink' scales each "
+            "face's contour towards its centroid; 'bisect' recursively bisects each "
+            "face and samples the midpoint of each bisecting line."
+        ),
+    )
     parser.add_argument("--horizon", type=float, default=3.0, help="Rollout horizon [s].")
     parser.add_argument("--dt", type=float, default=0.01, help="Integration step [s].")
     parser.add_argument(
@@ -410,7 +647,8 @@ def main():
     print(f"  vy    in [{vy_lo:.4f}, {vy_hi:.4f}] m/s")
     print(f"  omega in [{omega_lo:.4f}, {omega_hi:.4f}] rad/s")
 
-    boundary_velocities = sample_boundary_velocities(vertices, faces, sampling_degree=args.sampling_degree)
+    sampling_fn = sample_boundary_velocities if args.sampling_method == "shrink" else sample_boundary_velocities_bisected
+    boundary_velocities = sampling_fn(vertices, faces, sampling_degree=args.sampling_degree)
     extra_points = boundary_velocities[vertices.shape[0]:]
 
     plot_boundary_rollouts(
