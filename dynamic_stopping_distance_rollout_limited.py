@@ -71,6 +71,7 @@ def plot_stopping_rollouts(
     dt=0.005,
     rectangle_stride=20,
     show_final_only=True,
+    title_suffix=" (Limited)",
 ):
     """Plot stopping paths and chassis rectangles for sampled boundary velocities."""
     fig, ax = plt.subplots(figsize=(10, 10))
@@ -122,7 +123,8 @@ def plot_stopping_rollouts(
     ax.add_patch(Polygon(start_corners, closed=True, fill=False, edgecolor="black", linewidth=1.4))
 
     ax.set_title(
-        "Minimum-Time Stopping Rollouts with Oriented Chassis Footprint (Limited)\n"
+        "Minimum-Time Stopping Rollouts with Oriented Chassis Footprint"
+        f"{title_suffix}\n"
         f"max d_trans = {max(stop_distances):.3f} m, max t_stop = {max(stop_times):.3f} s"
     )
     ax.set_xlabel("x [m]")

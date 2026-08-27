@@ -4,9 +4,15 @@ from itertools import combinations
 
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.patches import Polygon
 
 from mecanum_common import Mecanum
+from kinematic_boundary_rollout_limited import (
+    _rectangle_corners,
+    plot_boundary_rollouts,
+    rollout_constant_twist,
+)
+from sampling_methods import sample_boundary_velocities_bisect as _sample_boundary_velocities_bisect
+from sampling_methods import sample_boundary_velocities_random as _sample_boundary_velocities_random
 
 
 def _build_inequalities(model, max_wheel_velocity):
@@ -79,105 +85,12 @@ def _build_face_polygons(vertices, A, b, atol=1e-8):
     return faces
 
 
-def _sample_points_on_face(face_points, samples, rng):
-    """Sample points approximately uniformly on a convex face polygon."""
-    center = np.mean(face_points, axis=0)
-    sampled = []
-
-    for i in range(face_points.shape[0]):
-        p0 = face_points[i]
-        p1 = face_points[(i + 1) % face_points.shape[0]]
-
-        # Sample barycentric coordinates over triangle (center, p0, p1).
-        for _ in range(max(1, samples // face_points.shape[0])):
-            r1 = np.sqrt(rng.random())
-            r2 = rng.random()
-            a = 1.0 - r1
-            b = r1 * (1.0 - r2)
-            c = r1 * r2
-            sampled.append(a * center + b * p0 + c * p1)
-
-    if len(sampled) == 0:
-        return np.empty((0, 3), dtype=float)
-    return np.array(sampled, dtype=float)
-
-
 def sample_boundary_velocities_random(model, max_wheel_velocity, total_samples=8, seed=0):
     """Sample [vx, vy, omega] commands on the kinematic polytope boundary."""
     A, b = _build_inequalities(model, max_wheel_velocity)
     vertices = _compute_polytope_vertices(A, b)
-    if vertices.shape[0] == 0:
-        raise ValueError("Could not compute polytope vertices for current parameters")
-
     faces = _build_face_polygons(vertices, A, b)
-    if len(faces) == 0:
-        raise ValueError("Could not compute polytope boundary faces")
-
-    rng = np.random.default_rng(seed)
-
-    # Split requested samples across faces, then trim to exact count.
-    per_face = max(1, int(np.ceil(total_samples / len(faces))))
-    all_pts = []
-    for face in faces:
-        pts = _sample_points_on_face(face, per_face, rng)
-        if pts.shape[0] > 0:
-            all_pts.append(pts)
-
-    boundary_pts = np.vstack(all_pts)
-
-    # Keep unique-ish points and shuffle before truncating.
-    rounded = np.round(boundary_pts, decimals=8)
-    _, unique_idx = np.unique(rounded, axis=0, return_index=True)
-    boundary_pts = boundary_pts[np.sort(unique_idx)]
-    rng.shuffle(boundary_pts)
-
-    if boundary_pts.shape[0] < total_samples:
-        return boundary_pts
-    return boundary_pts[:total_samples]
-
-
-def _ray_to_polytope_boundary(origin, direction, A, b, atol=1e-12):
-    """Intersect ray origin + t*direction (t>=0) with boundary of A @ x <= b."""
-    ad = A @ direction
-    ac = A @ origin
-
-    valid = ad > atol
-    if not np.any(valid):
-        # Fallback: reverse direction if forward ray does not exit.
-        direction = -direction
-        ad = A @ direction
-        valid = ad > atol
-        if not np.any(valid):
-            raise ValueError("Could not find exiting ray direction for boundary intersection")
-
-    t_candidates = (b[valid] - ac[valid]) / ad[valid]
-    t = np.min(t_candidates)
-    return origin + t * direction
-
-
-def _slice_polygon_vertices(A, b, omega, atol=1e-9):
-    """Return CCW-ordered (vx, vy) vertices of the polytope cross-section at `omega`."""
-    A2 = A[:, :2]
-    b2 = b - A[:, 2] * omega
-
-    verts = []
-    for i, j in combinations(range(A2.shape[0]), 2):
-        M = np.vstack([A2[i], A2[j]])
-        if np.isclose(np.linalg.det(M), 0.0, atol=atol):
-            continue
-
-        p = np.linalg.solve(M, np.array([b2[i], b2[j]], dtype=float))
-        if np.all(A2 @ p <= b2 + 1e-8):
-            if not any(np.allclose(p, q, atol=1e-8) for q in verts):
-                verts.append(p)
-
-    if not verts:
-        return np.empty((0, 2), dtype=float)
-
-    pts = np.array(verts, dtype=float)
-    center = np.mean(pts, axis=0)
-    rel = pts - center
-    return pts[np.argsort(np.arctan2(rel[:, 1], rel[:, 0]))]
+    return _sample_boundary_velocities_random(vertices, faces, total_samples=total_samples, seed=seed)
 
 
 def sample_boundary_velocities_bisect(model, max_wheel_velocity, bisect_tier=0, n_spacing=1):
@@ -190,136 +103,9 @@ def sample_boundary_velocities_bisect(model, max_wheel_velocity, bisect_tier=0, 
     (vx, vy); `n_spacing` evenly spaced points are taken per polygon edge, starting
     at each vertex, giving 4 * n_spacing points per slice for this polytope.
     """
-    if bisect_tier < 0:
-        raise ValueError("bisect_tier must be non-negative")
-    if n_spacing < 1:
-        raise ValueError("n_spacing must be at least 1")
-
     A, b = _build_inequalities(model, max_wheel_velocity)
     vertices = _compute_polytope_vertices(A, b)
-    if vertices.shape[0] == 0:
-        raise ValueError("Could not compute polytope vertices for current parameters")
-
-    omega_max = float(np.max(vertices[:, 2]))
-    divisions = 2 ** bisect_tier
-
-    points = []
-    for k in range(-(divisions - 1), divisions):
-        omega = omega_max * k / divisions
-        poly = _slice_polygon_vertices(A, b, omega)
-        if poly.shape[0] == 0:
-            continue
-
-        if poly.shape[0] < 3:
-            for p in poly:
-                points.append([p[0], p[1], omega])
-            continue
-
-        for idx in range(poly.shape[0]):
-            p0 = poly[idx]
-            p1 = poly[(idx + 1) % poly.shape[0]]
-            for s in range(n_spacing):
-                q = p0 + (s / n_spacing) * (p1 - p0)
-                points.append([q[0], q[1], omega])
-
-    if not points:
-        raise ValueError("Omega-slice sampler produced no boundary points")
-
-    return np.array(points, dtype=float)
-
-
-def rollout_constant_twist(vx, vy, omega, horizon, dt):
-    """Roll out a planar pose trajectory from constant body-frame twist."""
-    steps = int(np.ceil(horizon / dt))
-    states = np.zeros((steps + 1, 3), dtype=float)  # [x, y, theta]
-
-    for k in range(steps):
-        x, y, theta = states[k]
-        c = np.cos(theta)
-        s = np.sin(theta)
-
-        x_dot = c * vx - s * vy
-        y_dot = s * vx + c * vy
-
-        states[k + 1, 0] = x + dt * x_dot
-        states[k + 1, 1] = y + dt * y_dot
-        states[k + 1, 2] = theta + dt * omega
-
-    return states
-
-
-def _rectangle_corners(x, y, theta, half_length, half_width):
-    """Return 4 world-frame corners for the oriented chassis rectangle."""
-    # Local corners in counter-clockwise order.
-    local = np.array(
-        [
-            [half_length, half_width],
-            [half_length, -half_width],
-            [-half_length, -half_width],
-            [-half_length, half_width],
-        ],
-        dtype=float,
-    )
-
-    c = np.cos(theta)
-    s = np.sin(theta)
-    R = np.array([[c, -s], [s, c]], dtype=float)
-    world = local @ R.T
-    world[:, 0] += x
-    world[:, 1] += y
-    return world
-
-
-def plot_boundary_rollouts(
-    model,
-    boundary_velocities,
-    horizon=3.0,
-    dt=0.01,
-    rectangle_stride=30,
-    show_final_only=True,
-):
-    """Plot rollouts and chassis rectangles for sampled boundary velocities."""
-    fig, ax = plt.subplots(figsize=(10, 10))
-
-    trajectory_color = "tab:red"
-    rectangle_color = "tab:blue"
-    trajectory_alpha = 0.25
-    final_outline_alpha = 0.9
-    intermediate_outline_alpha = 0.12
-
-    for cmd in boundary_velocities:
-        vx, vy, omega = cmd
-        states = rollout_constant_twist(vx, vy, omega, horizon=horizon, dt=dt)
-
-        ax.plot(states[:, 0], states[:, 1], color=trajectory_color, linewidth=1.2, alpha=trajectory_alpha)
-
-        if show_final_only:
-            idxs = [states.shape[0] - 1]
-        else:
-            idxs = list(range(0, states.shape[0], rectangle_stride))
-            if idxs[-1] != states.shape[0] - 1:
-                idxs.append(states.shape[0] - 1)
-
-        for j, idx in enumerate(idxs):
-            x, y, theta = states[idx]
-            corners = _rectangle_corners(
-                x=x,
-                y=y,
-                theta=theta,
-                half_length=model.wb_hlength,
-                half_width=model.wb_hwidth,
-            )
-            alpha = intermediate_outline_alpha if (not show_final_only and j < len(idxs) - 1) else final_outline_alpha
-            poly = Polygon(corners, closed=True, fill=False, edgecolor=rectangle_color, linewidth=0.9, alpha=alpha)
-            ax.add_patch(poly)
-
-    ax.set_title("Boundary-Velocity Rollouts with Oriented Chassis Footprint")
-    ax.set_xlabel("x [m]")
-    ax.set_ylabel("y [m]")
-    ax.set_aspect("equal", adjustable="box")
-    ax.grid(True, alpha=0.25)
-    plt.tight_layout()
-    plt.show()
+    return _sample_boundary_velocities_bisect(A, b, vertices, bisect_tier=bisect_tier, n_spacing=n_spacing)
 
 
 def main():
@@ -398,7 +184,10 @@ def main():
         dt=args.dt,
         rectangle_stride=args.rectangle_stride,
         show_final_only=(not args.show_all_rectangles),
+        title_suffix="",
+        show_start=False,
     )
+    plt.show()
 
 
 if __name__ == "__main__":

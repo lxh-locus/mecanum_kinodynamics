@@ -13,122 +13,19 @@ body acceleration is then the constant -v0 / t_stop.
 import argparse
 import sys
 
-import matplotlib.pyplot as plt
-import numpy as np
-from matplotlib.patches import Polygon
-
 from kinematic_boundary_rollout import (
-    _rectangle_corners,
     sample_boundary_velocities_bisect,
     sample_boundary_velocities_random,
 )
+import matplotlib.pyplot as plt
+
+from dynamic_stopping_distance_rollout_limited import (
+    plot_stopping_rollouts,
+    rollout_stopping_twist,
+    stopping_time,
+)
 from mecanum_common import Mecanum
-from stopping_distance_polytope import _compute_acceleration_zonotope, _minkowski_functional
-
-
-def stopping_time(accel_hull, bodyv):
-    """Minimum time to bring body velocity `bodyv` to rest [s]."""
-    v0 = np.asarray(bodyv, dtype=float)
-    if np.allclose(v0, 0.0):
-        return 0.0
-    return float(_minkowski_functional(accel_hull, -v0[np.newaxis, :])[0])
-
-
-def rollout_stopping_twist(vx, vy, omega, accel_hull, dt):
-    """Roll out a planar pose trajectory while braking to rest in minimum time."""
-    v0 = np.array([vx, vy, omega], dtype=float)
-    t_stop = stopping_time(accel_hull, v0)
-    if t_stop <= 0.0:
-        return np.zeros((1, 3), dtype=float), 0.0
-
-    accel = -v0 / t_stop
-    steps = int(np.ceil(t_stop / dt))
-    states = np.zeros((steps + 1, 3), dtype=float)  # [x, y, theta]
-
-    for k in range(steps):
-        t = min(k * dt, t_stop)
-        # Final partial step keeps the trajectory from overshooting t_stop.
-        step = min(dt, t_stop - t)
-        vx_k, vy_k, omega_k = v0 + accel * t
-
-        x, y, theta = states[k]
-        c = np.cos(theta)
-        s = np.sin(theta)
-
-        states[k + 1, 0] = x + step * (c * vx_k - s * vy_k)
-        states[k + 1, 1] = y + step * (s * vx_k + c * vy_k)
-        states[k + 1, 2] = theta + step * omega_k
-
-    return states, t_stop
-
-
-def plot_stopping_rollouts(
-    model,
-    boundary_velocities,
-    accel_hull,
-    dt=0.005,
-    rectangle_stride=20,
-    show_final_only=True,
-):
-    """Plot stopping paths and chassis rectangles for sampled boundary velocities."""
-    fig, ax = plt.subplots(figsize=(10, 10))
-
-    trajectory_color = "tab:red"
-    rectangle_color = "tab:blue"
-    trajectory_alpha = 0.25
-    final_outline_alpha = 0.9
-    intermediate_outline_alpha = 0.12
-    stop_distances = []
-    stop_times = []
-
-    for cmd in boundary_velocities:
-        vx, vy, omega = cmd
-        states, t_stop = rollout_stopping_twist(vx, vy, omega, accel_hull=accel_hull, dt=dt)
-
-        stop_times.append(t_stop)
-        stop_distances.append(float(np.linalg.norm(states[-1, :2])))
-
-        ax.plot(states[:, 0], states[:, 1], color=trajectory_color, linewidth=1.2, alpha=trajectory_alpha)
-
-        if show_final_only:
-            idxs = [states.shape[0] - 1]
-        else:
-            idxs = list(range(0, states.shape[0], rectangle_stride))
-            if idxs[-1] != states.shape[0] - 1:
-                idxs.append(states.shape[0] - 1)
-
-        for j, idx in enumerate(idxs):
-            x, y, theta = states[idx]
-            corners = _rectangle_corners(
-                x=x,
-                y=y,
-                theta=theta,
-                half_length=model.wb_hlength,
-                half_width=model.wb_hwidth,
-            )
-            alpha = intermediate_outline_alpha if (not show_final_only and j < len(idxs) - 1) else final_outline_alpha
-            poly = Polygon(corners, closed=True, fill=False, edgecolor=rectangle_color, linewidth=0.9, alpha=alpha)
-            ax.add_patch(poly)
-
-    start_corners = _rectangle_corners(
-        x=0.0,
-        y=0.0,
-        theta=0.0,
-        half_length=model.wb_hlength,
-        half_width=model.wb_hwidth,
-    )
-    ax.add_patch(Polygon(start_corners, closed=True, fill=False, edgecolor="black", linewidth=1.4))
-
-    ax.set_title(
-        "Minimum-Time Stopping Rollouts with Oriented Chassis Footprint\n"
-        f"max d_trans = {max(stop_distances):.3f} m, max t_stop = {max(stop_times):.3f} s"
-    )
-    ax.set_xlabel("x [m]")
-    ax.set_ylabel("y [m]")
-    ax.set_aspect("equal", adjustable="box")
-    ax.grid(True, alpha=0.25)
-    plt.tight_layout()
-    plt.show()
+from stopping_distance_polytope import _compute_acceleration_zonotope
 
 
 def main():
@@ -210,6 +107,7 @@ def main():
         dt=args.dt,
         rectangle_stride=args.rectangle_stride,
         show_final_only=(not args.show_all_rectangles),
+        title_suffix="",
     )
 
 
