@@ -140,6 +140,18 @@ def _plot_stopping_distances(
     samples=22,
     max_points=50000,
 ):
+    """Compute and plot translational and angular stopping distances.
+
+    Args:
+        model: Mecanum model providing physical parameters.
+        max_wheel_velocity: Absolute wheel-speed limit in rad/s.
+        max_torque: Absolute wheel-torque limit in N m.
+        range_scale: Multiplier for the plotted velocity range.
+        samples: Grid samples per velocity axis.
+        max_points: Maximum number of plotted points.
+    Returns:
+        ``None``; displays the generated matplotlib figure.
+    """
     accel_hull = _compute_acceleration_zonotope(model, max_torque)
     bodyv_pts, (max_vx, max_vy, max_vw) = _sample_feasible_bodyv(
         model, max_wheel_velocity, range_scale, samples

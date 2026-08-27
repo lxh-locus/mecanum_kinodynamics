@@ -19,7 +19,7 @@ from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 from mecanum_common import Mecanum
 from sampling_methods import (
     sample_boundary_velocities,
-    sample_boundary_velocities_bisected,
+    sample_boundary_velocities_face_bisection,
 )
 
 
@@ -396,7 +396,7 @@ def main():
     print(f"  vy    in [{vy_lo:.4f}, {vy_hi:.4f}] m/s")
     print(f"  omega in [{omega_lo:.4f}, {omega_hi:.4f}] rad/s")
 
-    sampling_fn = sample_boundary_velocities if args.sampling_method == "shrink" else sample_boundary_velocities_bisected
+    sampling_fn = sample_boundary_velocities if args.sampling_method == "shrink" else sample_boundary_velocities_face_bisection
     boundary_velocities = sampling_fn(vertices, faces, sampling_degree=args.sampling_degree)
     extra_points = boundary_velocities[vertices.shape[0]:]
 

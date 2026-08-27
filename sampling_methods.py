@@ -5,7 +5,15 @@ import numpy as np
 
 
 def _sample_points_on_face(face_points, samples, rng):
-    """Sample points approximately uniformly on a convex face polygon."""
+    """Sample points approximately uniformly on a convex face polygon.
+
+    Args:
+        face_points: Ordered ``(N, 3)`` polygon vertices.
+        samples: Approximate number of samples requested for this face.
+        rng: NumPy random number generator.
+    Returns:
+        An ``(M, 3)`` array of sampled points.
+    """
     center = np.mean(face_points, axis=0)
     sampled = []
 
@@ -27,7 +35,16 @@ def _sample_points_on_face(face_points, samples, rng):
 
 
 def sample_boundary_velocities_random(vertices, faces, total_samples=8, seed=0):
-    """Sample points approximately uniformly on supplied boundary faces."""
+    """Sample points approximately uniformly on supplied boundary faces.
+
+    Args:
+        vertices: ``(N, 3)`` polytope vertices, used for validation.
+        faces: Ordered polygon arrays describing the boundary faces.
+        total_samples: Maximum number of returned points.
+        seed: Seed for deterministic random sampling.
+    Returns:
+        An ``(M, 3)`` array of unique boundary points, with ``M <= total_samples``.
+    """
     if vertices.shape[0] == 0:
         raise ValueError("Could not compute polytope vertices for current parameters")
     if len(faces) == 0:
@@ -53,7 +70,16 @@ def sample_boundary_velocities_random(vertices, faces, total_samples=8, seed=0):
 
 
 def _slice_polygon_vertices(A, b, omega, atol=1e-9):
-    """Return CCW-ordered (vx, vy) vertices of a polytope slice."""
+    """Return CCW-ordered ``(vx, vy)`` vertices of a polytope slice.
+
+    Args:
+        A: Half-space matrix for ``A @ [vx, vy, omega] <= b``.
+        b: Half-space bounds.
+        omega: Fixed slice value.
+        atol: Determinant and feasibility tolerance.
+    Returns:
+        An ``(N, 2)`` CCW-ordered array, or an empty array if no slice exists.
+    """
     A2 = A[:, :2]
     b2 = b - A[:, 2] * omega
 
@@ -77,8 +103,18 @@ def _slice_polygon_vertices(A, b, omega, atol=1e-9):
     return pts[np.argsort(np.arctan2(rel[:, 1], rel[:, 0]))]
 
 
-def sample_boundary_velocities_bisect(A, b, vertices, bisect_tier=0, n_spacing=1):
-    """Sample a polytope boundary at evenly spaced omega slices."""
+def sample_boundary_velocities_omega_bisect(A, b, vertices, bisect_tier=0, n_spacing=1):
+    """Sample a polytope boundary at evenly spaced omega slices.
+
+    Args:
+        A: Half-space matrix for the polytope.
+        b: Half-space bounds.
+        vertices: ``(N, 3)`` polytope vertices.
+        bisect_tier: Number of dyadic subdivisions along omega.
+        n_spacing: Samples per edge of each omega slice.
+    Returns:
+        An ``(M, 3)`` array of boundary samples.
+    """
     if bisect_tier < 0:
         raise ValueError("bisect_tier must be non-negative")
     if n_spacing < 1:
@@ -114,7 +150,15 @@ def sample_boundary_velocities_bisect(A, b, vertices, bisect_tier=0, n_spacing=1
 
 
 def _edge_bisection_points(p_start, p_end, sampling_degree):
-    """Return dyadic bisection points along a segment."""
+    """Return dyadic bisection points along a segment.
+
+    Args:
+        p_start: Segment start point.
+        p_end: Segment end point.
+        sampling_degree: Number of recursive dyadic levels.
+    Returns:
+        A list of points strictly inside the segment.
+    """
     points = []
     for d in range(1, sampling_degree + 1):
         for k in range(1, 2 ** d, 2):
@@ -124,7 +168,15 @@ def _edge_bisection_points(p_start, p_end, sampling_degree):
 
 
 def sample_boundary_velocities(vertices, faces, sampling_degree=0):
-    """Sample vertices, edge points, and shrunk face contours."""
+    """Sample vertices, edge points, and shrunk face contours.
+
+    Args:
+        vertices: ``(N, 3)`` polytope vertices.
+        faces: Ordered polygon arrays describing the boundary faces.
+        sampling_degree: Number of dyadic edge and contour levels.
+    Returns:
+        An ``(M, 3)`` array of deduplicated surface samples.
+    """
     if sampling_degree < 0:
         raise ValueError("sampling_degree must be non-negative")
 
@@ -151,7 +203,13 @@ def sample_boundary_velocities(vertices, faces, sampling_degree=0):
 
 
 def _face_normal(face_pts):
-    """Return a unit normal for a planar, ordered polygon."""
+    """Return a unit normal for a planar, ordered polygon.
+
+    Args:
+        face_pts: Ordered ``(N, 3)`` polygon vertices.
+    Returns:
+        A unit-length 3D normal vector.
+    """
     v1 = face_pts[1] - face_pts[0]
     for i in range(2, face_pts.shape[0]):
         n = np.cross(v1, face_pts[i] - face_pts[0])
@@ -162,7 +220,13 @@ def _face_normal(face_pts):
 
 
 def _face_basis(normal):
-    """Return an orthonormal in-plane basis for a plane."""
+    """Return an orthonormal in-plane basis for a plane.
+
+    Args:
+        normal: Unit or nonzero 3D plane normal.
+    Returns:
+        Two orthonormal 3D vectors spanning the plane.
+    """
     ref = np.array([1.0, 0.0, 0.0])
     if abs(np.dot(normal, ref)) > 0.95:
         ref = np.array([0.0, 1.0, 0.0])
@@ -173,7 +237,14 @@ def _face_basis(normal):
 
 
 def _project_face_to_2d(face_pts, normal):
-    """Project an ordered 3D face into local 2D coordinates."""
+    """Project an ordered 3D face into local 2D coordinates.
+
+    Args:
+        face_pts: Ordered ``(N, 3)`` polygon vertices.
+        normal: Face normal used to construct the in-plane basis.
+    Returns:
+        ``(anchor, u, v, polygon_2d)`` for mapping between 3D and 2D.
+    """
     u, v = _face_basis(normal)
     anchor = face_pts[0]
     rel = face_pts - anchor
@@ -182,17 +253,43 @@ def _project_face_to_2d(face_pts, normal):
 
 
 def _point_to_2d(point, anchor, u, v):
+    """Convert one 3D point to face-local 2D coordinates.
+
+    Args:
+        point: 3D point to project.
+        anchor: 3D origin of the face-local frame.
+        u: First 3D basis vector.
+        v: Second 3D basis vector.
+    Returns:
+        A length-two NumPy array of local coordinates.
+    """
     rel = point - anchor
     return np.array([np.dot(rel, u), np.dot(rel, v)])
 
 
 def _points_to_3d(points_2d, anchor, u, v):
+    """Convert face-local 2D points back to 3D coordinates.
+
+    Args:
+        points_2d: ``(N, 2)`` local coordinates.
+        anchor: 3D origin of the face-local frame.
+        u: First 3D basis vector.
+        v: Second 3D basis vector.
+    Returns:
+        An ``(N, 3)`` array of world-frame points.
+    """
     points_2d = np.asarray(points_2d, dtype=float)
     return anchor + np.outer(points_2d[:, 0], u) + np.outer(points_2d[:, 1], v)
 
 
 def _polygon_area_2d(poly_2d):
-    """Return the area of a 2D polygon."""
+    """Return the area of a 2D polygon.
+
+    Args:
+        poly_2d: Ordered ``(N, 2)`` polygon vertices.
+    Returns:
+        The nonnegative polygon area as a float.
+    """
     n = poly_2d.shape[0]
     total = 0.0
     for i in range(n):
@@ -203,11 +300,26 @@ def _polygon_area_2d(poly_2d):
 
 
 def _rotate90(v):
+    """Rotate a 2D vector counter-clockwise by 90 degrees.
+
+    Args:
+        v: Length-two vector.
+    Returns:
+        The rotated length-two NumPy array.
+    """
     return np.array([-v[1], v[0]])
 
 
 def _line_polygon_intersections_2d(poly_2d, point_2d, direction_2d):
-    """Return sorted intersections of an infinite line and polygon."""
+    """Return sorted intersections of an infinite line and polygon.
+
+    Args:
+        poly_2d: Ordered convex polygon vertices.
+        point_2d: Point on the infinite line.
+        direction_2d: Direction vector for the line.
+    Returns:
+        A list of ``(line_parameter, point, edge_index)`` tuples.
+    """
     n = poly_2d.shape[0]
     hits = []
     for i in range(n):
@@ -234,7 +346,15 @@ def _line_polygon_intersections_2d(poly_2d, point_2d, direction_2d):
 
 
 def _split_polygon_by_line_2d(poly_2d, point_2d, direction_2d):
-    """Split a convex polygon by an infinite line."""
+    """Split a convex polygon by an infinite line.
+
+    Args:
+        poly_2d: Ordered convex polygon vertices.
+        point_2d: Point on the splitting line.
+        direction_2d: Direction vector for the splitting line.
+    Returns:
+        Two intersection points and the areas of the resulting halves, or ``None``.
+    """
     hits = _line_polygon_intersections_2d(poly_2d, point_2d, direction_2d)
     if len(hits) != 2:
         return None
@@ -249,7 +369,16 @@ def _split_polygon_by_line_2d(poly_2d, point_2d, direction_2d):
 
 
 def _bisecting_line_for_face_2d(poly_2d, origin_2d, angle_samples=180, origin_bias=0.25):
-    """Find an approximately area-bisecting line through a polygon centroid."""
+    """Find an approximately area-bisecting line through a polygon centroid.
+
+    Args:
+        poly_2d: Ordered convex polygon vertices.
+        origin_2d: Projected world-origin point used for directional bias.
+        angle_samples: Number of candidate line orientations.
+        origin_bias: Weight of directional bias relative to area balance.
+    Returns:
+        Two 2D boundary-intersection points defining the selected line.
+    """
     n = poly_2d.shape[0]
     centroid = np.mean(poly_2d, axis=0)
     total_area = max(_polygon_area_2d(poly_2d), 1e-12)
@@ -282,7 +411,15 @@ def _bisecting_line_for_face_2d(poly_2d, origin_2d, angle_samples=180, origin_bi
 
 
 def _ray_polygon_boundary_distance_2d(poly_2d, point_2d, direction_2d):
-    """Return the first boundary distance along a ray."""
+    """Return the first boundary distance along a ray.
+
+    Args:
+        poly_2d: Ordered convex polygon containing the point.
+        point_2d: Ray origin inside the polygon.
+        direction_2d: Ray direction.
+    Returns:
+        Positive distance to the first polygon boundary intersection.
+    """
     for t, _, _ in _line_polygon_intersections_2d(poly_2d, point_2d, direction_2d):
         if t > 1e-9:
             return t
@@ -290,7 +427,19 @@ def _ray_polygon_boundary_distance_2d(poly_2d, point_2d, direction_2d):
 
 
 def _perpendicular_bisect_points_2d(point, direction, arm_length_a, arm_length_b, depth, poly_2d, out_points):
-    """Recursively add perpendicular face-interior bisection points."""
+    """Recursively add perpendicular face-interior bisection points.
+
+    Args:
+        point: Current 2D branch point.
+        direction: Direction of the parent branch.
+        arm_length_a: Forward ray length for the next branch.
+        arm_length_b: Reverse ray length for the next branch.
+        depth: Remaining recursion depth.
+        poly_2d: Convex polygon containing all generated points.
+        out_points: Mutable list receiving generated points.
+    Returns:
+        ``None``; points are appended to ``out_points`` in place.
+    """
     stack = [(point, direction, arm_length_a, arm_length_b, depth)]
     while stack:
         pt, dirn, len_a, len_b, d = stack.pop()
@@ -309,8 +458,22 @@ def _perpendicular_bisect_points_2d(point, direction, arm_length_a, arm_length_b
                 stack.append((child_pt, perp, next_len_a, next_len_b, d - 1))
 
 
-def sample_boundary_velocities_bisected(vertices, faces, sampling_degree=0):
-    """Sample truncated-polytope faces with recursive interior bisection."""
+def sample_boundary_velocities_face_bisection(vertices, faces, sampling_degree=0):
+    """Sample truncated-polytope faces with recursive interior bisection.
+    This is fundamentally broken as it tries to bisect against boundaries, but forgets
+    to look at previous bisections. It still samples the space, but evenly and at an 
+    increasing, non-overlapping resolution that you might expect.
+
+    Args:
+        vertices: ``(N, 3)`` polytope vertices.
+        faces: List of boundary faces. Each face is a NumPy array with shape
+            ``(K, 3)``, where each row is one ``[vx, vy, omega]`` vertex of a
+            convex polygon. Vertices are ordered around the face and the first
+            vertex is not repeated at the end; ``K`` is at least 3.
+        sampling_degree: Number of recursive edge and interior levels.
+    Returns:
+        An ``(M, 3)`` array of deduplicated surface samples.
+    """
     if sampling_degree < 0:
         raise ValueError("sampling_degree must be non-negative")
 

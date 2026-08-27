@@ -11,7 +11,7 @@ from kinematic_boundary_rollout_limited import (
     plot_boundary_rollouts,
     rollout_constant_twist,
 )
-from sampling_methods import sample_boundary_velocities_bisect as _sample_boundary_velocities_bisect
+from sampling_methods import sample_boundary_velocities_omega_bisect as _sample_boundary_velocities_bisect
 from sampling_methods import sample_boundary_velocities_random as _sample_boundary_velocities_random
 
 
