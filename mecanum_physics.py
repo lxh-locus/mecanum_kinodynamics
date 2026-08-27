@@ -12,7 +12,16 @@ import numpy as np
 
 @dataclass(frozen=True)
 class MecanumPhysicsParams:
-    """Physical parameters for the mecanum dynamic model."""
+    """Physical parameters for the mecanum dynamic model.
+
+    Attributes:
+        wb_hwidth: Half wheel-base width in meters.
+        wb_hlength: Half wheel-base length in meters.
+        wheel_radius: Wheel radius in meters.
+        body_mass: Platform mass in kilograms.
+        wheel_spin_inertia: Per-wheel spin inertia in kg m^2.
+        body_yaw_inertia: Platform yaw inertia in kg m^2.
+    """
 
     wb_hwidth: float = 0.2405
     wb_hlength: float = 0.25
@@ -23,7 +32,13 @@ class MecanumPhysicsParams:
 
 
 def params_from_model(model) -> MecanumPhysicsParams:
-    """Build a parameter bundle from an existing `Mecanum` model object."""
+    """Build a parameter bundle from an existing model object.
+
+    Args:
+        model: Object exposing the six physical model attributes.
+    Returns:
+        A new immutable ``MecanumPhysicsParams`` instance.
+    """
     return MecanumPhysicsParams(
         wb_hwidth=float(model.wb_hwidth),
         wb_hlength=float(model.wb_hlength),
@@ -35,19 +50,39 @@ def params_from_model(model) -> MecanumPhysicsParams:
 
 
 def wheel_constraint_violation(wheel_velocity):
-    """Return the wheel-speed compatibility residual: w1 + w2 - w3 - w4."""
+    """Return the wheel-speed compatibility residual.
+
+    Args:
+        wheel_velocity: Iterable ``[w1, w2, w3, w4]`` in rad/s.
+    Returns:
+        Scalar residual ``w1 + w2 - w3 - w4``.
+    """
     w1, w2, w3, w4 = np.asarray(wheel_velocity, dtype=float)
     return w1 + w2 - w3 - w4
 
 
 def relax_wheel_velocity_to_constraint(wheel_velocity):
-    """Project wheel speeds to the closest vector satisfying w1+w2-w3-w4 = 0."""
+    """Project wheel speeds to the closest compatible vector.
+
+    Args:
+        wheel_velocity: Iterable ``[w1, w2, w3, w4]`` in rad/s.
+    Returns:
+        A length-four NumPy array satisfying ``w1 + w2 - w3 - w4 = 0``.
+    """
     w1, w2, w3, w4 = np.asarray(wheel_velocity, dtype=float)
     shift = (w1 + w2 - w3 - w4) / 4.0 # An alternative would be normalize somehow?
     return np.array([w1 - shift, w2 - shift, w3 + shift, w4 + shift], dtype=float)
 
 
 def _prepare_wheel_velocity(wheel_velocity, strict):
+    """Validate a wheel velocity vector and optionally project it.
+
+    Args:
+        wheel_velocity: Candidate length-four wheel velocity vector.
+        strict: If true, reject compatibility violations; otherwise project them.
+    Returns:
+        A compatible length-four floating-point NumPy array.
+    """
     w = np.asarray(wheel_velocity, dtype=float)
     if w.shape != (4,):
         raise ValueError("wheel_velocity must have shape (4,)")
@@ -71,10 +106,12 @@ def forward_kinematics(
     """
     Compute body velocity from wheel velocities.
 
-    Inputs:
-    - wheel_velocity: [w1, w2, w3, w4]
+    Args:
+        wheel_velocity: Wheel speeds ``[w1, w2, w3, w4]`` in rad/s.
+        params: Physical model parameters.
+        strict: Whether to reject incompatible wheel speeds.
     Returns:
-    - [vx, vy, yaw_rate]
+        Body velocity ``[vx, vy, yaw_rate]`` in m/s, m/s, and rad/s.
     """
     w1, w2, w3, _ = _prepare_wheel_velocity(wheel_velocity, strict=strict)
     l_plus_w = params.wb_hlength + params.wb_hwidth
@@ -94,10 +131,11 @@ def inverse_kinematics(body_velocity, params: MecanumPhysicsParams = MecanumPhys
     (4 wheel speeds from a 3-DOF body velocity). This function returns the
     standard no-slip compatible solution that satisfies w1+w2-w3-w4 = 0.
 
-    Inputs:
-    - body_velocity: [vx, vy, yaw_rate]
+    Args:
+        body_velocity: Body velocity ``[vx, vy, yaw_rate]``.
+        params: Physical model parameters.
     Returns:
-    - [w1, w2, w3, w4]
+        Compatible wheel speeds ``[w1, w2, w3, w4]`` in rad/s.
     """
     body_v = np.asarray(body_velocity, dtype=float)
     if body_v.shape != (3,):
@@ -121,8 +159,11 @@ def forward_dynamics_matrix_linear(params: MecanumPhysicsParams = MecanumPhysics
     """
     Return linear map G such that body_accel = G @ wheel_torque.
 
-    body_accel = [ax, ay, alpha]
-    wheel_torque = [M1, M2, M3, M4]
+    Args:
+        params: Physical model parameters.
+    Returns:
+        A ``(3, 4)`` matrix mapping wheel torque ``[M1, M2, M3, M4]`` to
+        body acceleration ``[ax, ay, alpha]``.
     """
     l_plus_w = params.wb_hlength + params.wb_hwidth
     radius = params.wheel_radius
@@ -147,7 +188,14 @@ def forward_dynamics_matrix_linear(params: MecanumPhysicsParams = MecanumPhysics
 
 
 def forward_dynamics_linear(wheel_torque, params: MecanumPhysicsParams = MecanumPhysicsParams()):
-    """Approximate forward dynamics: wheel torques -> body accelerations."""
+    """Compute approximate body acceleration from wheel torques.
+
+    Args:
+        wheel_torque: Torque vector ``[M1, M2, M3, M4]`` in N m.
+        params: Physical model parameters.
+    Returns:
+        Body acceleration ``[ax, ay, alpha]``.
+    """
     torque = np.asarray(wheel_torque, dtype=float)
     if torque.shape != (4,):
         raise ValueError("wheel_torque must have shape (4,)")
@@ -160,6 +208,12 @@ def inverse_dynamics_linear(body_accel, params: MecanumPhysicsParams = MecanumPh
 
     Because the mapping is underdetermined (3 equations, 4 unknowns), this
     returns the minimum-norm solution using a pseudoinverse.
+
+    Args:
+        body_accel: Desired acceleration ``[ax, ay, alpha]``.
+        params: Physical model parameters.
+    Returns:
+        Minimum-norm wheel torque vector ``[M1, M2, M3, M4]``.
     """
     accel = np.asarray(body_accel, dtype=float)
     if accel.shape != (3,):
@@ -168,8 +222,108 @@ def inverse_dynamics_linear(body_accel, params: MecanumPhysicsParams = MecanumPh
     return np.linalg.pinv(gain) @ accel
 
 
+def individual_wheel_braking_deceleration(max_body_x_deceleration):
+    """Convert a body-x deceleration limit to an individual-wheel value.
+
+    The four roller axes are diagonal, with two wheels aligned to each axis
+    family. If every wheel provides the same axis-constrained deceleration
+    ``d_wheel``, their body-x contributions sum to ``2 * d_wheel``. Therefore,
+    the equal per-wheel value corresponding to a desired body-x limit is half
+    that limit.
+
+    Args:
+        max_body_x_deceleration: Positive total body-x deceleration in m/s^2.
+    Returns:
+        The equal axis-constrained braking deceleration for one wheel in m/s^2.
+    Raises:
+        ValueError: If ``max_body_x_deceleration`` is not positive.
+    """
+    if max_body_x_deceleration <= 0.0:
+        raise ValueError("max_body_x_deceleration must be positive")
+    return max_body_x_deceleration / 2.0
+
+
+def sliding_deceleration(body_velocity, wheel_braking_deceleration, tolerance=1e-9):
+    """Generate a planar deceleration using a roller friction-circle model.
+
+    The contact force at each wheel is resolved in the roller-axis frame. The
+    component along ``roller_direction`` is the braking component; the
+    perpendicular component is the free-rolling direction and is therefore
+    not resisted. A friction circle limits the contact force to each wheel's
+    share of the available braking budget. This gives a continuous
+    slip-angle response: axis alignment gives maximum braking, while a
+    90-degree slip angle gives zero braking for that roller.
+
+    ``wheel_braking_deceleration`` is the axis-constrained braking value for
+    one wheel, in acceleration units. Use
+    ``individual_wheel_braking_deceleration`` to obtain it from a desired
+    total body-x deceleration. This is still a reduced model: it assumes equal
+    load sharing, ignores yaw moment from contact forces, and uses a hard
+    Coulomb-style friction-circle limit rather than a tire brush or measured
+    slip-angle curve.
+
+    Args:
+        body_velocity: Translational body velocity ``[vx, vy]`` or full planar
+            velocity ``[vx, vy, yaw_rate]``. Only ``vx`` and ``vy`` determine
+            sliding braking.
+        wheel_braking_deceleration: Positive axis-constrained braking
+            deceleration for one wheel in m/s^2.
+        tolerance: Absolute translational-speed threshold below which the
+            returned deceleration is treated as zero.
+    Returns:
+        A length-three NumPy array ``[ax, ay, alpha]`` in m/s^2 and rad/s^2.
+        The result is zero for zero translational velocity.
+    Raises:
+        ValueError: If the velocity has an unsupported shape or either scalar
+            parameter is not positive.
+    """
+    velocity = np.asarray(body_velocity, dtype=float)
+    if velocity.shape not in ((2,), (3,)):
+        raise ValueError("body_velocity must have shape (2,) or (3,)")
+    if wheel_braking_deceleration <= 0.0:
+        raise ValueError("wheel_braking_deceleration must be positive")
+    if tolerance <= 0.0:
+        raise ValueError("tolerance must be positive")
+
+    translation = velocity[:2]
+    speed = np.linalg.norm(translation)
+    if speed <= tolerance:
+        return np.zeros(3, dtype=float)
+
+    direction = translation / speed
+    roller_directions = np.array(
+        [
+            [1.0, -1.0],
+            [1.0, 1.0],
+            [1.0, 1.0],
+            [1.0, -1.0],
+        ],
+        dtype=float,
+    )
+    roller_directions /= np.linalg.norm(roller_directions, axis=1)[:, np.newaxis]
+    rolling_projection = roller_directions @ direction
+    rolling_projection = np.clip(rolling_projection, -1.0, 1.0)
+
+    # Resolve the velocity into each roller-axis frame. The desired braking
+    # force is restricted to that axis, with signed magnitude proportional to
+    # the velocity projection, so it is maximal at zero slip and zero at a
+    # 90-degree slip angle. The supplied value is already the individual-wheel
+    # axis braking value.
+    axis_acceleration = -wheel_braking_deceleration * rolling_projection
+    friction_limit = np.full(roller_directions.shape[0], wheel_braking_deceleration)
+    axis_acceleration = np.clip(axis_acceleration, -friction_limit, friction_limit)
+    acceleration = np.sum(axis_acceleration[:, np.newaxis] * roller_directions, axis=0)
+    return np.array([acceleration[0], acceleration[1], 0.0], dtype=float)
+
+
 def exact_dynamics_coeffs(params: MecanumPhysicsParams = MecanumPhysicsParams()):
-    """Return (k2, A2, C2) coefficients from Zeidis exact dynamics (Eq. 66)."""
+    """Return exact-model coefficients from Zeidis Eq. 66.
+
+    Args:
+        params: Physical model parameters.
+    Returns:
+        Tuple ``(k2, A2, C2)`` used by the nonlinear dynamics equations.
+    """
     l_plus_w = params.wb_hlength + params.wb_hwidth
     radius = params.wheel_radius
 
@@ -199,11 +353,13 @@ def forward_dynamics_exact(
     """
     Exact nonlinear forward dynamics: wheel torques + wheel speeds -> body accel.
 
-    Inputs:
-    - wheel_torque: [M1, M2, M3, M4]
-    - wheel_velocity: [w1, w2, w3, w4]
+    Args:
+        wheel_torque: Wheel torques ``[M1, M2, M3, M4]`` in N m.
+        wheel_velocity: Wheel speeds ``[w1, w2, w3, w4]`` in rad/s.
+        params: Physical model parameters.
+        strict: Whether to reject incompatible wheel speeds.
     Returns:
-    - [ax, ay, alpha]
+        Body acceleration ``[ax, ay, alpha]``.
     """
     torque = np.asarray(wheel_torque, dtype=float)
     if torque.shape != (4,):
@@ -240,6 +396,14 @@ def inverse_dynamics_exact(
 
     This is underdetermined, so the minimum-norm wheel torque solution is
     returned via pseudoinverse.
+
+    Args:
+        body_accel: Desired body acceleration ``[ax, ay, alpha]``.
+        wheel_velocity: Wheel speeds ``[w1, w2, w3, w4]`` in rad/s.
+        params: Physical model parameters.
+        strict: Whether to reject incompatible wheel speeds.
+    Returns:
+        Minimum-norm wheel torque vector ``[M1, M2, M3, M4]``.
     """
     accel = np.asarray(body_accel, dtype=float)
     if accel.shape != (3,):
@@ -286,6 +450,8 @@ __all__ = [
     "forward_dynamics_matrix_linear",
     "forward_dynamics_linear",
     "inverse_dynamics_linear",
+    "individual_wheel_braking_deceleration",
+    "sliding_deceleration",
     "exact_dynamics_coeffs",
     "forward_dynamics_exact",
     "inverse_dynamics_exact",
