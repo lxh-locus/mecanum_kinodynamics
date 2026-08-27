@@ -1,0 +1,154 @@
+"""Visualize sliding deceleration over the kinematically feasible xy velocities."""
+import argparse
+
+import matplotlib.pyplot as plt
+import numpy as np
+from matplotlib.patches import Polygon
+
+from kinematic_boundary_rollout_limited import _rectangle_corners
+from mecanum_physics import (
+    MecanumPhysicsParams,
+    individual_wheel_braking_deceleration,
+    inverse_kinematics,
+    sliding_deceleration,
+)
+
+
+def _directional_decelerations(
+    params, max_wheel_velocity, wheel_braking_deceleration, angles
+):
+    """Evaluate braking at the kinematic boundary for a set of xy headings.
+
+    Args:
+        params: Mecanum physical parameters.
+        max_wheel_velocity: Absolute wheel-speed limit in rad/s.
+        wheel_braking_deceleration: Per-wheel braking deceleration in m/s^2.
+        angles: Heading angles in radians, measured from body +x toward +y.
+    Returns:
+        ``(speeds, magnitudes)`` arrays containing the kinematic boundary
+        speed and directional braking deceleration for each angle.
+    """
+    speeds = []
+    magnitudes = []
+    for angle in angles:
+        direction = np.array([np.cos(angle), np.sin(angle)], dtype=float)
+        unit_wheel_velocity = inverse_kinematics(
+            [direction[0], direction[1], 0.0], params=params
+        )
+        boundary_speed = max_wheel_velocity / np.max(np.abs(unit_wheel_velocity))
+        velocity = np.array([*(boundary_speed * direction), 0.0], dtype=float)
+        acceleration = sliding_deceleration(
+            velocity,
+            wheel_braking_deceleration=wheel_braking_deceleration,
+            params=params,
+        )
+        speeds.append(boundary_speed)
+        magnitudes.append(-np.dot(acceleration[:2], direction))
+    return np.asarray(speeds, dtype=float), np.asarray(magnitudes, dtype=float)
+
+
+def plot_sliding_deceleration_xy(
+    params=None,
+    max_wheel_velocity=10.0,
+    max_body_x_deceleration=4.0,
+    range_scale=1.15,
+):
+    """Plot 16 directional deceleration arrows around the robot footprint.
+
+    Args:
+        params: Mecanum physical parameters, or ``None`` for defaults.
+        max_wheel_velocity: Absolute wheel-speed limit in rad/s.
+        max_body_x_deceleration: Total body-x braking limit in m/s^2.
+        range_scale: Multiplier for the displayed arrow-length scale.
+    Returns:
+        ``(figure, axis)`` containing the single diagnostic plot.
+    """
+    if params is None:
+        params = MecanumPhysicsParams()
+    if max_wheel_velocity <= 0.0:
+        raise ValueError("max_wheel_velocity must be positive")
+    if max_body_x_deceleration <= 0.0:
+        raise ValueError("max_body_x_deceleration must be positive")
+    if range_scale <= 0.0:
+        raise ValueError("range_scale must be positive")
+
+    wheel_braking_deceleration = individual_wheel_braking_deceleration(
+        max_body_x_deceleration,
+        params=params,
+    )
+    angles = np.arange(16, dtype=float) * (2.0 * np.pi / 16.0)
+    speeds, magnitudes = _directional_decelerations(
+        params, max_wheel_velocity, wheel_braking_deceleration, angles
+    )
+
+    figure, axis = plt.subplots(figsize=(9, 9))
+    robot = _rectangle_corners(
+        x=0.0,
+        y=0.0,
+        theta=0.0,
+        half_length=params.wb_hlength,
+        half_width=params.wb_hwidth,
+    )
+    axis.add_patch(Polygon(robot, closed=True, facecolor="lightsteelblue", edgecolor="black", alpha=0.7))
+
+    arrow_scale = range_scale * max(params.wb_hlength, params.wb_hwidth) / max(magnitudes)
+    arrow_x = np.cos(angles) * magnitudes * arrow_scale
+    arrow_y = np.sin(angles) * magnitudes * arrow_scale
+    axis.quiver(
+        np.zeros_like(angles),
+        np.zeros_like(angles),
+        arrow_x,
+        arrow_y,
+        color="tab:red",
+        angles="xy",
+        scale_units="xy",
+        scale=1.0,
+        width=0.004,
+    )
+    for angle, speed, magnitude, x, y in zip(angles, speeds, magnitudes, arrow_x, arrow_y):
+        axis.text(
+            x,
+            y,
+            f"{np.degrees(angle):g}°\na={magnitude:.2f}\nv={speed:.2f}",
+            ha="center",
+            va="center",
+            fontsize=8,
+        )
+
+    axis.set_title(
+        "Sliding Deceleration by Body-Velocity Direction\n"
+        f"kinematic boundary, zero yaw rate, max wheel velocity = {max_wheel_velocity:g} rad/s"
+    )
+    axis.set_xlabel("body x forward [m]")
+    axis.set_ylabel("body y left [m]")
+    axis.set_xlim(-arrow_scale * max(magnitudes), arrow_scale * max(magnitudes))
+    axis.set_ylim(-arrow_scale * max(magnitudes), arrow_scale * max(magnitudes))
+    axis.set_aspect(1.0, adjustable="box")
+    axis.grid(True, alpha=0.2)
+    figure.tight_layout()
+    return figure, axis
+
+
+def main():
+    """Parse command-line options and display the xy deceleration plot."""
+    parser = argparse.ArgumentParser(
+        description=(
+            "Visualize sliding deceleration magnitude over kinematically limited "
+            "body vx/vy velocities with zero yaw rate."
+        )
+    )
+    parser.add_argument("--max-wheel-velocity", type=float, default=10.0)
+    parser.add_argument("--max-body-x-deceleration", type=float, default=4.0)
+    parser.add_argument("--range-scale", type=float, default=1.15)
+    args = parser.parse_args()
+
+    plot_sliding_deceleration_xy(
+        max_wheel_velocity=args.max_wheel_velocity,
+        max_body_x_deceleration=args.max_body_x_deceleration,
+        range_scale=args.range_scale,
+    )
+    plt.show()
+
+
+if __name__ == "__main__":
+    main()

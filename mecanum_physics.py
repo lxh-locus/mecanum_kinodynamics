@@ -21,6 +21,10 @@ class MecanumPhysicsParams:
         body_mass: Platform mass in kilograms.
         wheel_spin_inertia: Per-wheel spin inertia in kg m^2.
         body_yaw_inertia: Platform yaw inertia in kg m^2.
+        roller_directions: Four roller rotation-axis directions in the body
+            frame, ordered as front-left, front-right, rear-left, rear-right.
+            The body frame is FLU: x forward, y left, and z up. Each direction
+            is a 2D ``(x, y)`` vector; its sign selects an axis orientation.
     """
 
     wb_hwidth: float = 0.2405
@@ -29,6 +33,12 @@ class MecanumPhysicsParams:
     body_mass: float = 100.0
     wheel_spin_inertia: float = 0.08
     body_yaw_inertia: float = 1.2
+    roller_directions: tuple = (
+        (1.0, -1.0),
+        (1.0, 1.0),
+        (1.0, 1.0),
+        (1.0, -1.0),
+    )
 
 
 def params_from_model(model) -> MecanumPhysicsParams:
@@ -222,17 +232,21 @@ def inverse_dynamics_linear(body_accel, params: MecanumPhysicsParams = MecanumPh
     return np.linalg.pinv(gain) @ accel
 
 
-def individual_wheel_braking_deceleration(max_body_x_deceleration):
+def individual_wheel_braking_deceleration(
+    max_body_x_deceleration,
+    params: MecanumPhysicsParams = MecanumPhysicsParams(),
+):
     """Convert a body-x deceleration limit to an individual-wheel value.
 
-    The four roller axes are diagonal, with two wheels aligned to each axis
-    family. If every wheel provides the same axis-constrained deceleration
-    ``d_wheel``, their body-x contributions sum to ``2 * d_wheel``. Therefore,
-    the equal per-wheel value corresponding to a desired body-x limit is half
-    that limit.
+    The four roller axes are diagonal. For body-x motion, each wheel's full
+    axis braking value contributes a ``1/sqrt(2)`` body-x component, so the
+    equal per-wheel value is calibrated by the sum of those projections.
 
     Args:
         max_body_x_deceleration: Positive total body-x deceleration in m/s^2.
+        params: Physical model parameters containing the four body-frame roller
+            directions. The current calibration assumes their layout is
+            symmetric.
     Returns:
         The equal axis-constrained braking deceleration for one wheel in m/s^2.
     Raises:
@@ -240,41 +254,58 @@ def individual_wheel_braking_deceleration(max_body_x_deceleration):
     """
     if max_body_x_deceleration <= 0.0:
         raise ValueError("max_body_x_deceleration must be positive")
-    return max_body_x_deceleration / 2.0
+    roller_directions = np.asarray(params.roller_directions, dtype=float)
+    if roller_directions.shape != (4, 2):
+        raise ValueError("params.roller_directions must have shape (4, 2)")
+    roller_norms = np.linalg.norm(roller_directions, axis=1)
+    if np.any(roller_norms <= 0.0):
+        raise ValueError("params.roller_directions must contain nonzero vectors")
+    roller_directions /= roller_norms[:, np.newaxis]
+    body_x_gain = np.sum(np.abs(roller_directions[:, 0]))
+    return max_body_x_deceleration / body_x_gain
 
 
-def sliding_deceleration(body_velocity, wheel_braking_deceleration, tolerance=1e-9):
+def sliding_deceleration(
+    body_velocity,
+    wheel_braking_deceleration,
+    params: MecanumPhysicsParams = MecanumPhysicsParams(),
+    tolerance=1e-9,
+):
     """Generate a planar deceleration using a roller friction-circle model.
 
     The contact force at each wheel is resolved in the roller-axis frame. The
     component along ``roller_direction`` is the braking component; the
     perpendicular component is the free-rolling direction and is therefore
-    not resisted. A friction circle limits the contact force to each wheel's
-    share of the available braking budget. This gives a continuous
-    slip-angle response: axis alignment gives maximum braking, while a
-    90-degree slip angle gives zero braking for that roller.
+    not resisted. A friction limit caps each wheel's axis force at its
+    individual braking value. A slipping roller contributes its full axis
+    braking value; a roller with zero velocity along its axis is fully rolling
+    and contributes no braking. This is a Coulomb-style sliding model, so the
+    response changes at the zero-slip boundary rather than varying smoothly
+    with slip angle.
 
     ``wheel_braking_deceleration`` is the axis-constrained braking value for
     one wheel, in acceleration units. Use
     ``individual_wheel_braking_deceleration`` to obtain it from a desired
     total body-x deceleration. This is still a reduced model: it assumes equal
     load sharing, ignores yaw moment from contact forces, and uses a hard
-    Coulomb-style friction-circle limit rather than a tire brush or measured
-    slip-angle curve.
+    Coulomb-style sliding limit rather than a tire brush or measured slip-angle
+    curve.
 
     Args:
         body_velocity: Translational body velocity ``[vx, vy]`` or full planar
-            velocity ``[vx, vy, yaw_rate]``. Only ``vx`` and ``vy`` determine
-            sliding braking.
+            velocity ``[vx, vy, yaw_rate]``. The yaw rate contributes to each
+            wheel's local contact velocity when present.
         wheel_braking_deceleration: Positive axis-constrained braking
             deceleration for one wheel in m/s^2.
+        params: Physical model parameters used for wheel locations, body mass,
+            and yaw inertia.
         tolerance: Absolute translational-speed threshold below which the
             returned deceleration is treated as zero.
     Returns:
         A length-three NumPy array ``[ax, ay, alpha]`` in m/s^2 and rad/s^2.
         The result is zero for zero translational velocity.
     Raises:
-        ValueError: If the velocity has an unsupported shape or either scalar
+        ValueError: If the velocity has an unsupported shape or a scalar
             parameter is not positive.
     """
     velocity = np.asarray(body_velocity, dtype=float)
@@ -286,34 +317,57 @@ def sliding_deceleration(body_velocity, wheel_braking_deceleration, tolerance=1e
         raise ValueError("tolerance must be positive")
 
     translation = velocity[:2]
+    yaw_rate = velocity[2] if velocity.shape == (3,) else 0.0
     speed = np.linalg.norm(translation)
-    if speed <= tolerance:
+    if speed <= tolerance and abs(yaw_rate) <= tolerance:
         return np.zeros(3, dtype=float)
 
-    direction = translation / speed
-    roller_directions = np.array(
+    wheel_positions = np.array(
         [
-            [1.0, -1.0],
-            [1.0, 1.0],
-            [1.0, 1.0],
-            [1.0, -1.0],
+            [params.wb_hlength, params.wb_hwidth],
+            [params.wb_hlength, -params.wb_hwidth],
+            [-params.wb_hlength, params.wb_hwidth],
+            [-params.wb_hlength, -params.wb_hwidth],
         ],
         dtype=float,
     )
-    roller_directions /= np.linalg.norm(roller_directions, axis=1)[:, np.newaxis]
-    rolling_projection = roller_directions @ direction
+    roller_directions = np.asarray(params.roller_directions, dtype=float)
+    if roller_directions.shape != (4, 2):
+        raise ValueError("params.roller_directions must have shape (4, 2)")
+    roller_norms = np.linalg.norm(roller_directions, axis=1)
+    if np.any(roller_norms <= 0.0):
+        raise ValueError("params.roller_directions must contain nonzero vectors")
+    roller_directions /= roller_norms[:, np.newaxis]
+    contact_velocities = np.column_stack(
+        [
+            translation[0] - yaw_rate * wheel_positions[:, 1],
+            translation[1] + yaw_rate * wheel_positions[:, 0],
+        ]
+    )
+    contact_speeds = np.linalg.norm(contact_velocities, axis=1)
+    contact_directions = np.zeros_like(contact_velocities)
+    nonzero_contacts = contact_speeds > tolerance
+    contact_directions[nonzero_contacts] = (
+        contact_velocities[nonzero_contacts] / contact_speeds[nonzero_contacts, np.newaxis]
+    )
+    rolling_projection = np.sum(roller_directions * contact_directions, axis=1)
     rolling_projection = np.clip(rolling_projection, -1.0, 1.0)
 
-    # Resolve the velocity into each roller-axis frame. The desired braking
-    # force is restricted to that axis, with signed magnitude proportional to
-    # the velocity projection, so it is maximal at zero slip and zero at a
-    # 90-degree slip angle. The supplied value is already the individual-wheel
-    # axis braking value.
-    axis_acceleration = -wheel_braking_deceleration * rolling_projection
-    friction_limit = np.full(roller_directions.shape[0], wheel_braking_deceleration)
-    axis_acceleration = np.clip(axis_acceleration, -friction_limit, friction_limit)
-    acceleration = np.sum(axis_acceleration[:, np.newaxis] * roller_directions, axis=0)
-    return np.array([acceleration[0], acceleration[1], 0.0], dtype=float)
+    # A slipping roller supplies its full Coulomb braking value along its axis.
+    # A zero projection means it is fully rolling, so it supplies no braking.
+    axis_acceleration = -wheel_braking_deceleration * np.sign(rolling_projection)
+    axis_acceleration[np.isclose(rolling_projection, 0.0, atol=tolerance)] = 0.0
+    contact_accelerations = axis_acceleration[:, np.newaxis] * roller_directions
+    acceleration = np.sum(contact_accelerations, axis=0)
+    yaw_acceleration = (
+        params.body_mass
+        * np.sum(
+            wheel_positions[:, 0] * contact_accelerations[:, 1]
+            - wheel_positions[:, 1] * contact_accelerations[:, 0]
+        )
+        / params.body_yaw_inertia
+    )
+    return np.array([acceleration[0], acceleration[1], yaw_acceleration], dtype=float)
 
 
 def exact_dynamics_coeffs(params: MecanumPhysicsParams = MecanumPhysicsParams()):
