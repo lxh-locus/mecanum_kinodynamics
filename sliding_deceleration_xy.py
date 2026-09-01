@@ -17,15 +17,16 @@ from mecanum_physics import (
 
 
 def _directional_decelerations(
-    params, max_wheel_velocity, wheel_braking_deceleration, angles
+    params, max_wheel_velocity, angles, deceleration_fn, deceleration_kwargs
 ):
     """Evaluate braking at the kinematic boundary for a set of xy headings.
 
     Args:
         params: Mecanum physical parameters.
         max_wheel_velocity: Absolute wheel-speed limit in rad/s.
-        wheel_braking_deceleration: Per-wheel braking deceleration in m/s^2.
         angles: Heading angles in radians, measured from body +x toward +y.
+        deceleration_fn: Function mapping body velocity to ``[ax, ay, alpha]``.
+        deceleration_kwargs: Keyword arguments passed to ``deceleration_fn``.
     Returns:
         ``(speeds, magnitudes)`` arrays containing the kinematic boundary
         speed and directional braking deceleration for each angle.
@@ -39,11 +40,7 @@ def _directional_decelerations(
         )
         boundary_speed = max_wheel_velocity / np.max(np.abs(unit_wheel_velocity))
         velocity = np.array([*(boundary_speed * direction), 0.0], dtype=float)
-        acceleration = sliding_deceleration(
-            velocity,
-            wheel_braking_deceleration=wheel_braking_deceleration,
-            params=params,
-        )
+        acceleration = deceleration_fn(velocity, **deceleration_kwargs)
         speeds.append(boundary_speed)
         magnitudes.append(-np.dot(acceleration[:2], direction))
     return np.asarray(speeds, dtype=float), np.asarray(magnitudes, dtype=float)
@@ -55,6 +52,11 @@ def plot_sliding_deceleration_xy(
     max_body_x_deceleration=4.0,
     range_scale=1.15,
     angle_sweep=16,
+    deceleration_fn=sliding_deceleration,
+    deceleration_kwargs=None,
+    arrow_color="tab:red",
+    title="Sliding Deceleration by Body-Velocity Direction",
+    subtitle=None,
 ):
     """Plot directional deceleration arrows around the robot footprint.
 
@@ -64,9 +66,15 @@ def plot_sliding_deceleration_xy(
         max_body_x_deceleration: Total body-x braking limit in m/s^2.
         range_scale: Multiplier for the displayed arrow-length scale.
         angle_sweep: Number of evenly spaced velocity headings to evaluate.
+        deceleration_fn: Function mapping body velocity to ``[ax, ay, alpha]``.
+        deceleration_kwargs: Keyword arguments passed to ``deceleration_fn``.
+            If omitted, the current roller sliding model is used.
+        arrow_color: Matplotlib color for the deceleration arrows.
+        title: First title line for the figure.
+        subtitle: Optional second title line. If omitted, a default kinematic
+            boundary subtitle is used.
     Returns:
-        ``((figure, axis), (empirical_figure, empirical_axis))`` containing the
-        roller-model and empirical step-model diagnostic plots.
+        ``(figure, axis)`` containing the diagnostic plot.
     """
     if params is None:
         params = MecanumPhysicsParams()
@@ -79,26 +87,22 @@ def plot_sliding_deceleration_xy(
     if not isinstance(angle_sweep, (int, np.integer)) or angle_sweep <= 0:
         raise ValueError("angle_sweep must be a positive integer")
 
-    wheel_braking_deceleration = individual_wheel_braking_deceleration(
-        max_body_x_deceleration,
-        params=params,
-    )
+    if deceleration_kwargs is None:
+        wheel_braking_deceleration = individual_wheel_braking_deceleration(
+            max_body_x_deceleration,
+            params=params,
+        )
+        deceleration_kwargs = {
+            "wheel_braking_deceleration": wheel_braking_deceleration,
+            "params": params,
+        }
+    else:
+        deceleration_kwargs = dict(deceleration_kwargs)
+
     angles = np.arange(angle_sweep, dtype=float) * (2.0 * np.pi / angle_sweep)
     speeds, magnitudes = _directional_decelerations(
-        params, max_wheel_velocity, wheel_braking_deceleration, angles
+        params, max_wheel_velocity, angles, deceleration_fn, deceleration_kwargs
     )
-    empirical_magnitudes = []
-    for angle, speed in zip(angles, speeds):
-        direction = np.array([np.cos(angle), np.sin(angle)], dtype=float)
-        velocity = np.array([*(speed * direction), 0.0], dtype=float)
-        empirical_acceleration = sliding_deceleration_discrete_emperical(
-            velocity,
-            cardinal_body_deceleration=max_body_x_deceleration,
-            diagonal_body_deceleration=0.5 * max_body_x_deceleration,
-            diagonal_angle_half_width_degrees=10.0,
-        )
-        empirical_magnitudes.append(-np.dot(empirical_acceleration[:2], direction))
-    empirical_magnitudes = np.asarray(empirical_magnitudes, dtype=float)
 
     figure, axis = plt.subplots(figsize=(9, 9))
     robot = _rectangle_corners(
@@ -110,19 +114,15 @@ def plot_sliding_deceleration_xy(
     )
     axis.add_patch(Polygon(robot, closed=True, facecolor="lightsteelblue", edgecolor="black", alpha=0.7))
 
-    arrow_scale = range_scale * max(params.wb_hlength, params.wb_hwidth) / max(
-        np.max(magnitudes), np.max(empirical_magnitudes)
-    )
+    arrow_scale = range_scale * max(params.wb_hlength, params.wb_hwidth) / np.max(magnitudes)
     arrow_x = np.cos(angles) * magnitudes * arrow_scale
     arrow_y = np.sin(angles) * magnitudes * arrow_scale
-    empirical_arrow_x = np.cos(angles) * empirical_magnitudes * arrow_scale
-    empirical_arrow_y = np.sin(angles) * empirical_magnitudes * arrow_scale
     axis.quiver(
         np.zeros_like(angles),
         np.zeros_like(angles),
         arrow_x,
         arrow_y,
-        color="tab:red",
+        color=arrow_color,
         angles="xy",
         scale_units="xy",
         scale=1.0,
@@ -138,60 +138,18 @@ def plot_sliding_deceleration_xy(
             fontsize=8,
         )
 
-    axis.set_title(
-        "Sliding Deceleration by Body-Velocity Direction\n"
-        f"kinematic boundary, zero yaw rate, max wheel velocity = {max_wheel_velocity:g} rad/s"
-    )
+    if subtitle is None:
+        subtitle = f"kinematic boundary, zero yaw rate, max wheel velocity = {max_wheel_velocity:g} rad/s"
+    axis.set_title(f"{title}\n{subtitle}")
     axis.set_xlabel("body x forward [m]")
     axis.set_ylabel("body y left [m]")
-    arrow_limit = arrow_scale * max(np.max(magnitudes), np.max(empirical_magnitudes))
+    arrow_limit = arrow_scale * np.max(magnitudes)
     axis.set_xlim(-arrow_limit, arrow_limit)
     axis.set_ylim(-arrow_limit, arrow_limit)
     axis.set_aspect(1.0, adjustable="box")
     axis.grid(True, alpha=0.2)
     figure.tight_layout()
-
-    empirical_figure, empirical_axis = plt.subplots(figsize=(9, 9))
-    empirical_axis.add_patch(
-        Polygon(robot, closed=True, facecolor="lightsteelblue", edgecolor="black", alpha=0.7)
-    )
-    empirical_axis.quiver(
-        np.zeros_like(angles),
-        np.zeros_like(angles),
-        empirical_arrow_x,
-        empirical_arrow_y,
-        color="tab:blue",
-        angles="xy",
-        scale_units="xy",
-        scale=1.0,
-        width=0.004,
-        alpha=0.8,
-    )
-    for angle, speed, magnitude, x, y in zip(
-        angles, speeds, empirical_magnitudes, empirical_arrow_x, empirical_arrow_y
-    ):
-        empirical_axis.text(
-            x,
-            y,
-            f"{np.degrees(angle):g}°\na={magnitude:.2f}\nv={speed:.2f}",
-            ha="center",
-            va="center",
-            fontsize=8,
-        )
-
-    empirical_axis.set_title(
-        "Empirical Step Sliding Deceleration by Body-Velocity Direction\n"
-        f"axes = {max_body_x_deceleration:g} m/s^2, diagonal = "
-        f"{0.5 * max_body_x_deceleration:g} m/s^2, +/-10 deg"
-    )
-    empirical_axis.set_xlabel("body x forward [m]")
-    empirical_axis.set_ylabel("body y left [m]")
-    empirical_axis.set_xlim(-arrow_limit, arrow_limit)
-    empirical_axis.set_ylim(-arrow_limit, arrow_limit)
-    empirical_axis.set_aspect(1.0, adjustable="box")
-    empirical_axis.grid(True, alpha=0.2)
-    empirical_figure.tight_layout()
-    return (figure, axis), (empirical_figure, empirical_axis)
+    return figure, axis
 
 
 def main():
@@ -213,6 +171,25 @@ def main():
         max_body_x_deceleration=args.max_body_x_deceleration,
         range_scale=args.range_scale,
         angle_sweep=args.sweep_n_angles,
+        deceleration_fn=sliding_deceleration,
+    )
+    plot_sliding_deceleration_xy(
+        max_wheel_velocity=args.max_wheel_velocity,
+        max_body_x_deceleration=args.max_body_x_deceleration,
+        range_scale=args.range_scale,
+        angle_sweep=args.sweep_n_angles,
+        deceleration_fn=sliding_deceleration_discrete_emperical,
+        deceleration_kwargs={
+            "cardinal_body_deceleration": args.max_body_x_deceleration,
+            "diagonal_body_deceleration": 0.5 * args.max_body_x_deceleration,
+            "diagonal_angle_half_width_degrees": 10.0,
+        },
+        arrow_color="tab:blue",
+        title="Empirical Step Sliding Deceleration by Body-Velocity Direction",
+        subtitle=(
+            f"axes = {args.max_body_x_deceleration:g} m/s^2, diagonal = "
+            f"{0.5 * args.max_body_x_deceleration:g} m/s^2, +/-10 deg"
+        ),
     )
     plt.show()
 

@@ -388,6 +388,7 @@ def main():
         max_body_x_deceleration=args.max_body_x_deceleration,
         range_scale=args.direction_range_scale,
         angle_sweep=args.sweep_n_angles,
+        deceleration_fn=sliding_deceleration,
     )
     plt.show()
 
