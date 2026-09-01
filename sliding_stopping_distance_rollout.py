@@ -285,6 +285,11 @@ def main():
         action="store_true",
         help="Draw chassis rectangles throughout each rollout instead of final-only view.",
     )
+    parser.add_argument(
+        "--hide-requested-bounds-box",
+        action="store_true",
+        help="Suppress the translucent user-requested vx/vy/omega bounds box in the 3D polytope figure.",
+    )
     parser.add_argument("--vx-min", type=float, default=0.5, help="Minimum body vx limit [m/s].")
     parser.add_argument("--vx-max", type=float, default=1.0, help="Maximum body vx limit [m/s].")
     parser.add_argument("--vy-min", type=float, default=-0.1, help="Minimum body vy limit [m/s].")
@@ -368,7 +373,15 @@ def main():
         speed_tolerance=args.speed_tolerance,
         yaw_rate_tolerance=args.yaw_rate_tolerance,
     )
-    plot_truncated_polytope(vertices, faces, vx_range, vy_range, omega_range, extra_points=extra_points)
+    plot_truncated_polytope(
+        vertices,
+        faces,
+        vx_range,
+        vy_range,
+        omega_range,
+        extra_points=extra_points,
+        show_requested_bounds_box=(not args.hide_requested_bounds_box),
+    )
     plot_sliding_deceleration_xy(
         params=params,
         max_wheel_velocity=args.max_wheel_velocity,

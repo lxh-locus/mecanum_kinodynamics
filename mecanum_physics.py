@@ -372,6 +372,72 @@ def sliding_deceleration(
     return np.array([acceleration[0], acceleration[1], yaw_acceleration], dtype=float)
 
 
+def sliding_deceleration_discrete_emperical(
+    body_velocity,
+    cardinal_body_deceleration,
+    diagonal_body_deceleration,
+    diagonal_angle_half_width_degrees,
+    tolerance=1e-9,
+):
+    """Generate empirical stepwise sliding deceleration by velocity heading.
+
+    The model applies ``cardinal_body_deceleration`` for headings near the body
+    x/y axes and ``diagonal_body_deceleration`` for headings inside the repeated
+    45-degree diagonal bands. ``diagonal_angle_half_width_degrees`` sets the
+    symmetric half-width around every diagonal direction; for example, 5 degrees
+    applies the diagonal value from 40 to 50 degrees, and likewise in every
+    quadrant. There is no smooth transition between the two values.
+
+    Args:
+        body_velocity: Translational body velocity ``[vx, vy]`` or full planar
+            velocity ``[vx, vy, yaw_rate]``. Only the translational direction is
+            used by this empirical model.
+        cardinal_body_deceleration: Positive body deceleration used outside the
+            diagonal bands, in m/s^2.
+        diagonal_body_deceleration: Positive body deceleration used inside the
+            diagonal bands, in m/s^2. This must not exceed the cardinal value.
+        diagonal_angle_half_width_degrees: Half-width around each 45-degree
+            diagonal direction, in degrees. Must be in ``[0, 45]``.
+        tolerance: Translational-speed threshold below which the returned
+            deceleration is treated as zero.
+    Returns:
+        A length-three NumPy array ``[ax, ay, alpha]`` in m/s^2 and rad/s^2.
+        ``alpha`` is zero because this empirical model only specifies body-x/y
+        deceleration values.
+    Raises:
+        ValueError: If the velocity shape is unsupported or a scalar parameter
+            is outside its valid range.
+    """
+    velocity = np.asarray(body_velocity, dtype=float)
+    if velocity.shape not in ((2,), (3,)):
+        raise ValueError("body_velocity must have shape (2,) or (3,)")
+    if cardinal_body_deceleration <= 0.0:
+        raise ValueError("cardinal_body_deceleration must be positive")
+    if diagonal_body_deceleration <= 0.0:
+        raise ValueError("diagonal_body_deceleration must be positive")
+    if diagonal_body_deceleration > cardinal_body_deceleration:
+        raise ValueError("diagonal_body_deceleration must not exceed cardinal_body_deceleration")
+    if not (0.0 <= diagonal_angle_half_width_degrees <= 45.0):
+        raise ValueError("diagonal_angle_half_width_degrees must be in [0, 45]")
+    if tolerance <= 0.0:
+        raise ValueError("tolerance must be positive")
+
+    translation = velocity[:2]
+    speed = np.linalg.norm(translation)
+    if speed <= tolerance:
+        return np.zeros(3, dtype=float)
+
+    heading_degrees = np.degrees(np.arctan2(translation[1], translation[0])) % 90.0
+    distance_from_diagonal = abs(heading_degrees - 45.0)
+    if distance_from_diagonal <= diagonal_angle_half_width_degrees:
+        deceleration = diagonal_body_deceleration
+    else:
+        deceleration = cardinal_body_deceleration
+
+    acceleration_xy = -deceleration * translation / speed
+    return np.array([acceleration_xy[0], acceleration_xy[1], 0.0], dtype=float)
+
+
 def exact_dynamics_coeffs(params: MecanumPhysicsParams = MecanumPhysicsParams()):
     """Return exact-model coefficients from Zeidis Eq. 66.
 
@@ -508,6 +574,7 @@ __all__ = [
     "inverse_dynamics_linear",
     "individual_wheel_braking_deceleration",
     "sliding_deceleration",
+    "sliding_deceleration_discrete_emperical",
     "exact_dynamics_coeffs",
     "forward_dynamics_exact",
     "inverse_dynamics_exact",

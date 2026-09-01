@@ -247,14 +247,60 @@ def plot_boundary_rollouts(
     plt.tight_layout()
 
 
-def plot_truncated_polytope(vertices, faces, vx_range, vy_range, omega_range, extra_points=None):
+def plot_truncated_polytope(
+    vertices,
+    faces,
+    vx_range,
+    vy_range,
+    omega_range,
+    extra_points=None,
+    show_requested_bounds_box=True,
+):
     """Plot the truncated 3D kinematic polytope's boundary patches and vertices.
 
     `extra_points`, if given, are additional sampled points (e.g. from
     --sampling-degree) drawn in gray with alpha=0.5.
+    If `show_requested_bounds_box` is true, a translucent gray box shows the
+    user-requested vx/vy/omega bounds before wheel-speed clipping.
     """
     fig = plt.figure(figsize=(8, 8))
     ax = fig.add_subplot(111, projection="3d")
+    ax.computed_zorder = False
+
+    if show_requested_bounds_box:
+        vx_min, vx_max = vx_range
+        vy_min, vy_max = vy_range
+        omega_min, omega_max = omega_range
+        box_vertices = np.array(
+            [
+                [vx_min, vy_min, omega_min],
+                [vx_max, vy_min, omega_min],
+                [vx_max, vy_max, omega_min],
+                [vx_min, vy_max, omega_min],
+                [vx_min, vy_min, omega_max],
+                [vx_max, vy_min, omega_max],
+                [vx_max, vy_max, omega_max],
+                [vx_min, vy_max, omega_max],
+            ],
+            dtype=float,
+        )
+        box_faces = [
+            box_vertices[[0, 1, 2, 3]],
+            box_vertices[[4, 5, 6, 7]],
+            box_vertices[[0, 1, 5, 4]],
+            box_vertices[[1, 2, 6, 5]],
+            box_vertices[[2, 3, 7, 6]],
+            box_vertices[[3, 0, 4, 7]],
+        ]
+        bounds_box = Poly3DCollection(
+            box_faces,
+            alpha=0.3,
+            facecolor="lightgray",
+            edgecolor="gray",
+            linewidth=0.7,
+            zorder=0,
+        )
+        ax.add_collection3d(bounds_box)
 
     colors = [
         "tab:blue",
@@ -276,15 +322,16 @@ def plot_truncated_polytope(vertices, faces, vx_range, vy_range, omega_range, ex
             facecolor=colors[i % len(colors)],
             edgecolor="black",
             linewidth=0.8,
+            zorder=2,
         )
         ax.add_collection3d(patch)
 
-    ax.scatter(vertices[:, 0], vertices[:, 1], vertices[:, 2], s=14, c="black", alpha=0.8)
+    ax.scatter(vertices[:, 0], vertices[:, 1], vertices[:, 2], s=14, c="black", alpha=0.8, zorder=3)
 
     if extra_points is not None and len(extra_points) > 0:
         extra_points = np.asarray(extra_points, dtype=float)
         ax.scatter(
-            extra_points[:, 0], extra_points[:, 1], extra_points[:, 2], s=10, c="gray", alpha=0.7
+            extra_points[:, 0], extra_points[:, 1], extra_points[:, 2], s=10, c="gray", alpha=0.7, zorder=4
         )
 
     ax.set_title("Velocity-Limited Kinematic Polytope")
