@@ -279,17 +279,19 @@ def sliding_deceleration(
     not resisted. A friction limit caps each wheel's axis force at its
     individual braking value. A slipping roller contributes its full axis
     braking value; a roller with zero velocity along its axis is fully rolling
-    and contributes no braking. This is a Coulomb-style sliding model, so the
-    response changes at the zero-slip boundary rather than varying smoothly
-    with slip angle.
+    and contributes no braking. This is a Coulomb-style sliding model: each
+    slipping roller applies a fixed-magnitude braking response based only on
+    the sign of the velocity projected onto its resisted axis. As a result,
+    the response changes abruptly when that projection crosses zero instead
+    of varying smoothly with slip angle.
 
     ``wheel_braking_deceleration`` is the axis-constrained braking value for
     one wheel, in acceleration units. Use
     ``individual_wheel_braking_deceleration`` to obtain it from a desired
     total body-x deceleration. This is still a reduced model: it assumes equal
-    load sharing, ignores yaw moment from contact forces, and uses a hard
-    Coulomb-style sliding limit rather than a tire brush or measured slip-angle
-    curve.
+    load sharing, includes yaw moment only from the resolved contact forces,
+    and uses a hard Coulomb-style sliding limit rather than a tire brush or
+    measured slip-angle curve.
 
     Args:
         body_velocity: Translational body velocity ``[vx, vy]`` or full planar

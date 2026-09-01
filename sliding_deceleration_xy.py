@@ -52,14 +52,16 @@ def plot_sliding_deceleration_xy(
     max_wheel_velocity=10.0,
     max_body_x_deceleration=4.0,
     range_scale=1.15,
+    angle_sweep=16,
 ):
-    """Plot 16 directional deceleration arrows around the robot footprint.
+    """Plot directional deceleration arrows around the robot footprint.
 
     Args:
         params: Mecanum physical parameters, or ``None`` for defaults.
         max_wheel_velocity: Absolute wheel-speed limit in rad/s.
         max_body_x_deceleration: Total body-x braking limit in m/s^2.
         range_scale: Multiplier for the displayed arrow-length scale.
+        angle_sweep: Number of evenly spaced velocity headings to evaluate.
     Returns:
         ``(figure, axis)`` containing the single diagnostic plot.
     """
@@ -71,12 +73,14 @@ def plot_sliding_deceleration_xy(
         raise ValueError("max_body_x_deceleration must be positive")
     if range_scale <= 0.0:
         raise ValueError("range_scale must be positive")
+    if not isinstance(angle_sweep, (int, np.integer)) or angle_sweep <= 0:
+        raise ValueError("angle_sweep must be a positive integer")
 
     wheel_braking_deceleration = individual_wheel_braking_deceleration(
         max_body_x_deceleration,
         params=params,
     )
-    angles = np.arange(16, dtype=float) * (2.0 * np.pi / 16.0)
+    angles = np.arange(angle_sweep, dtype=float) * (2.0 * np.pi / angle_sweep)
     speeds, magnitudes = _directional_decelerations(
         params, max_wheel_velocity, wheel_braking_deceleration, angles
     )
@@ -140,12 +144,14 @@ def main():
     parser.add_argument("--max-wheel-velocity", type=float, default=10.0)
     parser.add_argument("--max-body-x-deceleration", type=float, default=4.0)
     parser.add_argument("--range-scale", type=float, default=1.15)
+    parser.add_argument("--sweep-n-angles", type=int, default=16)
     args = parser.parse_args()
 
     plot_sliding_deceleration_xy(
         max_wheel_velocity=args.max_wheel_velocity,
         max_body_x_deceleration=args.max_body_x_deceleration,
         range_scale=args.range_scale,
+        angle_sweep=args.sweep_n_angles,
     )
     plt.show()
 
