@@ -3,3 +3,4 @@ __pycache__/
 *.pdf
 *.txt
 fieldset_generator_barebones/rollout_output/*
+fieldset_generator_barebones/validation_output/*
