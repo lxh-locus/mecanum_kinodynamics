@@ -4,20 +4,36 @@ from dataclasses import dataclass
 import numpy as np
 import pytest
 
-from mecanum_physics import (
-    MecanumPhysicsParams,
-    exact_dynamics_coeffs,
-    forward_dynamics_exact,
-    forward_dynamics_linear,
-    forward_dynamics_matrix_linear,
-    forward_kinematics,
-    inverse_dynamics_exact,
-    inverse_dynamics_linear,
-    inverse_kinematics,
-    params_from_model,
-    relax_wheel_velocity_to_constraint,
-    wheel_constraint_violation,
-)
+try:
+    from .mecanum_physics import (
+        MecanumPhysicsParams,
+        exact_dynamics_coeffs,
+        forward_dynamics_exact,
+        forward_dynamics_linear,
+        forward_dynamics_matrix_linear,
+        forward_kinematics,
+        inverse_dynamics_exact,
+        inverse_dynamics_linear,
+        inverse_kinematics,
+        params_from_model,
+        relax_wheel_velocity_to_constraint,
+        wheel_constraint_violation,
+    )
+except ImportError:
+    from mecanum_physics import (
+        MecanumPhysicsParams,
+        exact_dynamics_coeffs,
+        forward_dynamics_exact,
+        forward_dynamics_linear,
+        forward_dynamics_matrix_linear,
+        forward_kinematics,
+        inverse_dynamics_exact,
+        inverse_dynamics_linear,
+        inverse_kinematics,
+        params_from_model,
+        relax_wheel_velocity_to_constraint,
+        wheel_constraint_violation,
+    )
 
 
 @dataclass(frozen=True)

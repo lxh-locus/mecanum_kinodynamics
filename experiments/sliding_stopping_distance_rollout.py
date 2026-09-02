@@ -13,21 +13,38 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.patches import Polygon
 
-from kinematic_boundary_rollout_limited import (
-    _polytope_faces,
-    compute_truncated_extents,
-    compute_wheel_velocity_limits,
-    plot_truncated_polytope,
-    sample_boundary_velocities,
-    sample_boundary_velocities_face_bisection,
-)
-from mecanum_common import Mecanum
-from mecanum_physics import (
-    MecanumPhysicsParams,
-    individual_wheel_braking_deceleration,
-    sliding_deceleration,
-)
-from sliding_deceleration_xy import plot_sliding_deceleration_xy
+try:
+    from .kinematic_boundary_rollout_limited import (
+        _polytope_faces,
+        compute_truncated_extents,
+        compute_wheel_velocity_limits,
+        plot_truncated_polytope,
+        sample_boundary_velocities,
+        sample_boundary_velocities_face_bisection,
+    )
+    from .mecanum_common import Mecanum
+    from .mecanum_physics import (
+        MecanumPhysicsParams,
+        individual_wheel_braking_deceleration,
+        sliding_deceleration,
+    )
+    from .sliding_deceleration_xy import plot_sliding_deceleration_xy
+except ImportError:
+    from kinematic_boundary_rollout_limited import (
+        _polytope_faces,
+        compute_truncated_extents,
+        compute_wheel_velocity_limits,
+        plot_truncated_polytope,
+        sample_boundary_velocities,
+        sample_boundary_velocities_face_bisection,
+    )
+    from mecanum_common import Mecanum
+    from mecanum_physics import (
+        MecanumPhysicsParams,
+        individual_wheel_braking_deceleration,
+        sliding_deceleration,
+    )
+    from sliding_deceleration_xy import plot_sliding_deceleration_xy
 
 
 def _is_stopped(body_velocity, speed_tolerance, yaw_rate_tolerance):

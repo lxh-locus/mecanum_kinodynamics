@@ -17,11 +17,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.patches import Polygon
 
-EXPERIMENTS_DIR = Path(__file__).resolve().parent.parent / "experiments"
-sys.path.insert(0, str(EXPERIMENTS_DIR))
+REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPOSITORY_ROOT))
 
-from mecanum_physics import MecanumPhysicsParams, individual_wheel_braking_deceleration
-from sliding_stopping_distance_rollout import rollout_sliding_deceleration
+from experiments.mecanum_physics import MecanumPhysicsParams, individual_wheel_braking_deceleration
+from experiments.sliding_stopping_distance_rollout import rollout_sliding_deceleration
 
 
 DEFAULT_CONFIG = Path(__file__).with_name("fieldset_config.json")

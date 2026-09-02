@@ -4,4 +4,4 @@ __pycache__/
 *.txt
 fieldset_generator_barebones/rollout_output/*
 fieldset_generator_barebones/validation_output/*
-fieldset_generator_redux1/rollout_output*/*
+fieldset_generator_redux1/*output*/*

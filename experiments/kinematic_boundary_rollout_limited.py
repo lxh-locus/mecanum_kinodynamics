@@ -16,11 +16,18 @@ import numpy as np
 from matplotlib.patches import Polygon
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
-from mecanum_common import Mecanum
-from sampling_methods import (
-    sample_boundary_velocities,
-    sample_boundary_velocities_face_bisection,
-)
+try:
+    from .mecanum_common import Mecanum
+    from .sampling_methods import (
+        sample_boundary_velocities,
+        sample_boundary_velocities_face_bisection,
+    )
+except ImportError:
+    from mecanum_common import Mecanum
+    from sampling_methods import (
+        sample_boundary_velocities,
+        sample_boundary_velocities_face_bisection,
+    )
 
 
 def _build_inequalities(model, max_wheel_velocity, vx_range, vy_range, omega_range):

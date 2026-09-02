@@ -6,14 +6,24 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.patches import Polygon
 
-from mecanum_common import RobotFootprint
-from mecanum_physics import (
-    MecanumPhysicsParams,
-    individual_wheel_braking_deceleration,
-    inverse_kinematics,
-    sliding_deceleration,
-    sliding_deceleration_discrete_emperical,
-)
+try:
+    from .mecanum_common import RobotFootprint
+    from .mecanum_physics import (
+        MecanumPhysicsParams,
+        individual_wheel_braking_deceleration,
+        inverse_kinematics,
+        sliding_deceleration,
+        sliding_deceleration_discrete_emperical,
+    )
+except ImportError:
+    from mecanum_common import RobotFootprint
+    from mecanum_physics import (
+        MecanumPhysicsParams,
+        individual_wheel_braking_deceleration,
+        inverse_kinematics,
+        sliding_deceleration,
+        sliding_deceleration_discrete_emperical,
+    )
 
 
 def _directional_decelerations(
