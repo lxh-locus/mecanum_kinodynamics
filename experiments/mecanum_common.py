@@ -24,8 +24,8 @@ from mecanum_physics import (
 class RobotFootprint:
     """Rectangular robot body footprint in the body frame (x forward, y left)."""
 
-    length: float = 0.700
-    width: float = 0.481
+    length: float = 0.812 # 2*0.065 buffer unadded
+    width: float = 0.567 # 2*0.065 buffer unadded
 
     def __post_init__(self):
         if self.length <= 0.0 or self.width <= 0.0:

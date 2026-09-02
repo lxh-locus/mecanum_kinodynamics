@@ -13,10 +13,7 @@ body acceleration is then the constant -v0 / t_stop.
 import argparse
 import sys
 
-from kinematic_boundary_rollout import (
-    sample_boundary_velocities_bisect,
-    sample_boundary_velocities_random,
-)
+from kinematic_boundary_rollout import sample_boundary_velocities
 import matplotlib.pyplot as plt
 
 from dynamic_stopping_distance_rollout_limited import (
@@ -38,13 +35,11 @@ def main():
     )
     parser.add_argument("--max-wheel-velocity", type=float, default=10.0, help="Wheel-speed limit [rad/s].")
     parser.add_argument("--max-torque", type=float, default=3.5, help="Wheel-torque limit [N*m].")
-    parser.add_argument("--samples", type=int, default=8, help="Number of boundary velocity samples (random method).")
-    parser.add_argument("--bisect-tier", type=int, default=0, help="Omega-axis bisection tier (bisect method).")
     parser.add_argument(
-        "--n-spacing",
+        "--sampling-degree",
         type=int,
-        default=1,
-        help="Evenly spaced points per cross-section edge (bisect method).",
+        default=0,
+        help="Surface sampling degree; degree 0 samples only polytope vertices.",
     )
     parser.add_argument("--dt", type=float, default=0.005, help="Integration step [s].")
     parser.add_argument(
@@ -53,12 +48,11 @@ def main():
         default=20,
         help="Draw a chassis rectangle every N trajectory samples.",
     )
-    parser.add_argument("--seed", type=int, default=0, help="RNG seed for boundary sampling.")
     parser.add_argument(
         "--sampling-method",
-        choices=["bisect", "random"],
-        default="bisect",
-        help="Boundary sampling method: deterministic omega-slice bisection or random face sampling.",
+        choices=["shrink", "bisect"],
+        default="shrink",
+        help="Face sampling method: shrink face contours or recursively bisect faces.",
     )
     parser.add_argument(
         "--show-all-rectangles",
@@ -71,32 +65,20 @@ def main():
         raise ValueError("max-wheel-velocity must be positive")
     if args.max_torque <= 0.0:
         raise ValueError("max-torque must be positive")
-    if args.samples < 1:
-        raise ValueError("samples must be at least 1")
-    if args.bisect_tier < 0:
-        raise ValueError("bisect-tier must be non-negative")
-    if args.n_spacing < 1:
-        raise ValueError("n-spacing must be at least 1")
+    if args.sampling_degree < 0:
+        raise ValueError("sampling-degree must be non-negative")
     if args.dt <= 0.0:
         raise ValueError("dt must be positive")
     if args.rectangle_stride < 1:
         raise ValueError("rectangle-stride must be at least 1")
 
     model = Mecanum()
-    if args.sampling_method == "random":
-        boundary_velocities = sample_boundary_velocities_random(
-            model=model,
-            max_wheel_velocity=args.max_wheel_velocity,
-            total_samples=args.samples,
-            seed=args.seed,
-        )
-    else:
-        boundary_velocities = sample_boundary_velocities_bisect(
-            model=model,
-            max_wheel_velocity=args.max_wheel_velocity,
-            bisect_tier=args.bisect_tier,
-            n_spacing=args.n_spacing,
-        )
+    boundary_velocities = sample_boundary_velocities(
+        model=model,
+        max_wheel_velocity=args.max_wheel_velocity,
+        sampling_degree=args.sampling_degree,
+        sampling_method=args.sampling_method,
+    )
 
     accel_hull = _compute_acceleration_zonotope(model, args.max_torque)
 
@@ -109,6 +91,7 @@ def main():
         show_final_only=(not args.show_all_rectangles),
         title_suffix="",
     )
+    plt.show()
 
 
 if __name__ == "__main__":

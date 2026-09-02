@@ -10,8 +10,10 @@ from kinematic_boundary_rollout_limited import (
     plot_boundary_rollouts,
     rollout_constant_twist,
 )
-from sampling_methods import sample_boundary_velocities_omega_bisect as _sample_boundary_velocities_bisect
-from sampling_methods import sample_boundary_velocities_random as _sample_boundary_velocities_random
+from sampling_methods import (
+    sample_boundary_velocities as _sample_boundary_velocities,
+    sample_boundary_velocities_face_bisection as _sample_boundary_velocities_face_bisection,
+)
 
 
 def _build_inequalities(model, max_wheel_velocity):
@@ -84,27 +86,16 @@ def _build_face_polygons(vertices, A, b, atol=1e-8):
     return faces
 
 
-def sample_boundary_velocities_random(model, max_wheel_velocity, total_samples=8, seed=0):
+def sample_boundary_velocities(model, max_wheel_velocity, sampling_degree=0, sampling_method="shrink"):
     """Sample [vx, vy, omega] commands on the kinematic polytope boundary."""
     A, b = _build_inequalities(model, max_wheel_velocity)
     vertices = _compute_polytope_vertices(A, b)
     faces = _build_face_polygons(vertices, A, b)
-    return _sample_boundary_velocities_random(vertices, faces, total_samples=total_samples, seed=seed)
-
-
-def sample_boundary_velocities_bisect(model, max_wheel_velocity, bisect_tier=0, n_spacing=1):
-    """
-    Deterministic boundary sampler that bisects only along the omega axis.
-
-    `bisect_tier` t splits [-omega_max, omega_max] into 2^t sub-intervals per side,
-    yielding omega levels k * omega_max / 2^t for k in (-2^t, 2^t); the degenerate
-    endpoints +/-omega_max are skipped. Each omega slice is a convex polygon in
-    (vx, vy); `n_spacing` evenly spaced points are taken per polygon edge, starting
-    at each vertex, giving 4 * n_spacing points per slice for this polytope.
-    """
-    A, b = _build_inequalities(model, max_wheel_velocity)
-    vertices = _compute_polytope_vertices(A, b)
-    return _sample_boundary_velocities_bisect(A, b, vertices, bisect_tier=bisect_tier, n_spacing=n_spacing)
+    if sampling_method == "shrink":
+        return _sample_boundary_velocities(vertices, faces, sampling_degree=sampling_degree)
+    if sampling_method == "bisect":
+        return _sample_boundary_velocities_face_bisection(vertices, faces, sampling_degree=sampling_degree)
+    raise ValueError(f"Unknown sampling method: {sampling_method}")
 
 
 def main():
@@ -115,13 +106,11 @@ def main():
         )
     )
     parser.add_argument("--max-wheel-velocity", type=float, default=10.0, help="Wheel-speed limit [rad/s].")
-    parser.add_argument("--samples", type=int, default=8, help="Number of boundary velocity samples (random method).")
-    parser.add_argument("--bisect-tier", type=int, default=0, help="Omega-axis bisection tier (bisect method).")
     parser.add_argument(
-        "--n-spacing",
+        "--sampling-degree",
         type=int,
-        default=1,
-        help="Evenly spaced points per cross-section edge (bisect method).",
+        default=0,
+        help="Surface sampling degree; degree 0 samples only polytope vertices.",
     )
     parser.add_argument("--horizon", type=float, default=3.0, help="Rollout horizon [s].")
     parser.add_argument("--dt", type=float, default=0.01, help="Integration step [s].")
@@ -131,12 +120,11 @@ def main():
         default=40,
         help="Draw a chassis rectangle every N trajectory samples.",
     )
-    parser.add_argument("--seed", type=int, default=0, help="RNG seed for boundary sampling.")
     parser.add_argument(
         "--sampling-method",
-        choices=["bisect", "random"],
-        default="bisect",
-        help="Boundary sampling method: deterministic recursive bisection or random face sampling.",
+        choices=["shrink", "bisect"],
+        default="shrink",
+        help="Face sampling method: shrink face contours or recursively bisect faces.",
     )
     parser.add_argument(
         "--show-all-rectangles",
@@ -147,12 +135,8 @@ def main():
 
     if args.max_wheel_velocity <= 0.0:
         raise ValueError("max-wheel-velocity must be positive")
-    if args.samples < 1:
-        raise ValueError("samples must be at least 1")
-    if args.bisect_tier < 0:
-        raise ValueError("bisect-tier must be non-negative")
-    if args.n_spacing < 1:
-        raise ValueError("n-spacing must be at least 1")
+    if args.sampling_degree < 0:
+        raise ValueError("sampling-degree must be non-negative")
     if args.horizon <= 0.0:
         raise ValueError("horizon must be positive")
     if args.dt <= 0.0:
@@ -161,20 +145,12 @@ def main():
         raise ValueError("rectangle-stride must be at least 1")
 
     model = Mecanum()
-    if args.sampling_method == "random":
-        boundary_velocities = sample_boundary_velocities_random(
-                    model=model,
-                    max_wheel_velocity=args.max_wheel_velocity,
-                    total_samples=args.samples,
-                    seed=args.seed,
-                )
-    else:
-        boundary_velocities = sample_boundary_velocities_bisect(
-                    model=model,
-                    max_wheel_velocity=args.max_wheel_velocity,
-                    bisect_tier=args.bisect_tier,
-                    n_spacing=args.n_spacing,
-                )
+    boundary_velocities = sample_boundary_velocities(
+        model=model,
+        max_wheel_velocity=args.max_wheel_velocity,
+        sampling_degree=args.sampling_degree,
+        sampling_method=args.sampling_method,
+    )
 
     plot_boundary_rollouts(
         model=model,

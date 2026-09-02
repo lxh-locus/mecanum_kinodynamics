@@ -6534,9 +6534,9 @@
   "generator_params": {
     "integrator_dt": 0.001,
     "footprint_resolution": 0.5,
-    "yaw_rate_instances": 4,
-    "y_vel_instances": 4,
-    "x_vel_instances": 4,
+    "yaw_rate_instances": 8,
+    "y_vel_instances": 8,
+    "x_vel_instances": 8,
     "robot_response_time": 0.05,
     "generator_version": "0.0",
     "leg_diameter_multiplier": 1.6,
