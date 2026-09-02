@@ -123,7 +123,26 @@ def response_time(robot_revision, generator_params):
     return float(generator_params.get("robot_response_time", 0.0)) + max(sensor_times, default=0.0)
 
 
-def plot_field_rollouts(robot_revision, field, generator_params, dt, output_path):
+def save_rollout_data(output_path, initial_velocities, trajectories, dt, delay, field_name):
+    """Save variable-length pose histories as a compressed, padded NumPy archive."""
+    lengths = np.array([trajectory.shape[0] for trajectory in trajectories], dtype=int)
+    poses = np.full((len(trajectories), lengths.max(), 3), np.nan, dtype=float)
+    for index, trajectory in enumerate(trajectories):
+        poses[index, :lengths[index]] = trajectory
+    np.savez_compressed(
+        output_path,
+        format_version=1,
+        model="independent_axis_braking",
+        field_name=field_name,
+        initial_velocities=np.asarray(initial_velocities, dtype=float),
+        poses=poses,
+        lengths=lengths,
+        dt=float(dt),
+        response_time=float(delay),
+    )
+
+
+def plot_field_rollouts(robot_revision, field, generator_params, dt, output_path, data_output_path=None):
     """Render boundary rollouts and initial/final padded body footprints for one field."""
     instances = {
         "x": int(generator_params.get("x_vel_instances", 4)),
@@ -133,10 +152,13 @@ def plot_field_rollouts(robot_revision, field, generator_params, dt, output_path
     if any(count < 2 for count in instances.values()):
         raise ValueError("Each velocity instance count must be at least two")
     delay = response_time(robot_revision, generator_params)
+    initial_velocities = sample_boundary_velocities(field["dynamic_limit"], instances)
     trajectories = [
         rollout(velocity, robot_revision["brake_deceleration"], delay, dt)
-        for velocity in sample_boundary_velocities(field["dynamic_limit"], instances)
+        for velocity in initial_velocities
     ]
+    if data_output_path is not None:
+        save_rollout_data(data_output_path, initial_velocities, trajectories, dt, delay, field["name"])
 
     figure, axis = plt.subplots(figsize=(10, 10))
     for trajectory in trajectories:
@@ -175,6 +197,17 @@ def main():
         default=Path(__file__).with_name("rollout_output"),
         help="Directory for generated PNG files.",
     )
+    parser.add_argument(
+        "--data-output-dir",
+        type=Path,
+        default=Path(__file__).with_name("rollout_data"),
+        help="Directory for compressed rollout .npz archives.",
+    )
+    parser.add_argument(
+        "--save-rollout-data",
+        action="store_true",
+        help="Save rollout pose histories as compressed .npz archives.",
+    )
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -191,10 +224,18 @@ def main():
             raise ValueError(f"Unknown field names: {', '.join(sorted(missing))}")
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
+    if args.save_rollout_data:
+        args.data_output_dir.mkdir(parents=True, exist_ok=True)
     for field in fields:
         output_path = args.output_dir / f"{field['name']}_rollouts.png"
-        count, delay = plot_field_rollouts(config["robot_revision"], field, generator_params, dt, output_path)
-        print(f"{field['name']}: {count} rollouts, response delay {delay:.3f} s -> {output_path}")
+        data_output_path = (
+            args.data_output_dir / f"{field['name']}_rollouts.npz" if args.save_rollout_data else None
+        )
+        count, delay = plot_field_rollouts(
+            config["robot_revision"], field, generator_params, dt, output_path, data_output_path
+        )
+        data_message = f", {data_output_path}" if data_output_path is not None else ""
+        print(f"{field['name']}: {count} rollouts, response delay {delay:.3f} s -> {output_path}{data_message}")
 
 
 if __name__ == "__main__":

@@ -1,7 +1,9 @@
 __pycache__/
 .pytest_cache/
 *.pdf
+*.png
 *.txt
-fieldset_generator_barebones/rollout_output/*
-fieldset_generator_barebones/validation_output/*
+fieldset_generator_barebones/*output*/*
+fieldset_generator_barebones/*data*/*
 fieldset_generator_redux1/*output*/*
+fieldset_generator_redux1/*data*/*
