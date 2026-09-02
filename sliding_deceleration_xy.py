@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.patches import Polygon
 
-from kinematic_boundary_rollout_limited import _rectangle_corners
+from mecanum_common import RobotFootprint
 from mecanum_physics import (
     MecanumPhysicsParams,
     individual_wheel_braking_deceleration,
@@ -105,16 +105,11 @@ def plot_sliding_deceleration_xy(
     )
 
     figure, axis = plt.subplots(figsize=(9, 9))
-    robot = _rectangle_corners(
-        x=0.0,
-        y=0.0,
-        theta=0.0,
-        half_length=params.wb_hlength,
-        half_width=params.wb_hwidth,
-    )
+    footprint = RobotFootprint()
+    robot = footprint.world_corners(x=0.0, y=0.0, theta=0.0)
     axis.add_patch(Polygon(robot, closed=True, facecolor="lightsteelblue", edgecolor="black", alpha=0.7))
 
-    arrow_scale = range_scale * max(params.wb_hlength, params.wb_hwidth) / np.max(magnitudes)
+    arrow_scale = range_scale * max(footprint.length, footprint.width) / np.max(magnitudes)
     arrow_x = np.cos(angles) * magnitudes * arrow_scale
     arrow_y = np.sin(angles) * magnitudes * arrow_scale
     axis.quiver(

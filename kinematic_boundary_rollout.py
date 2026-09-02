@@ -7,7 +7,6 @@ import numpy as np
 
 from mecanum_common import Mecanum
 from kinematic_boundary_rollout_limited import (
-    _rectangle_corners,
     plot_boundary_rollouts,
     rollout_constant_twist,
 )

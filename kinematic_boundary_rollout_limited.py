@@ -162,28 +162,6 @@ def rollout_constant_twist(vx, vy, omega, horizon, dt):
     return states
 
 
-def _rectangle_corners(x, y, theta, half_length, half_width):
-    """Return 4 world-frame corners for the oriented chassis rectangle."""
-    # Local corners in counter-clockwise order.
-    local = np.array(
-        [
-            [half_length, half_width],
-            [half_length, -half_width],
-            [-half_length, -half_width],
-            [-half_length, half_width],
-        ],
-        dtype=float,
-    )
-
-    c = np.cos(theta)
-    s = np.sin(theta)
-    R = np.array([[c, -s], [s, c]], dtype=float)
-    world = local @ R.T
-    world[:, 0] += x
-    world[:, 1] += y
-    return world
-
-
 def plot_boundary_rollouts(
     model,
     boundary_velocities,
@@ -194,7 +172,7 @@ def plot_boundary_rollouts(
     title_suffix=" (Limited)",
     show_start=True,
 ):
-    """Plot rollouts and chassis rectangles for sampled boundary velocities."""
+    """Plot rollouts and robot-footprint polygons for sampled boundary velocities."""
     fig, ax = plt.subplots(figsize=(10, 10))
 
     trajectory_color = "tab:red"
@@ -218,25 +196,13 @@ def plot_boundary_rollouts(
 
         for j, idx in enumerate(idxs):
             x, y, theta = states[idx]
-            corners = _rectangle_corners(
-                x=x,
-                y=y,
-                theta=theta,
-                half_length=model.wb_hlength,
-                half_width=model.wb_hwidth,
-            )
+            corners = model.footprint.world_corners(x=x, y=y, theta=theta)
             alpha = intermediate_outline_alpha if (not show_final_only and j < len(idxs) - 1) else final_outline_alpha
             poly = Polygon(corners, closed=True, fill=False, edgecolor=rectangle_color, linewidth=0.9, alpha=alpha)
             ax.add_patch(poly)
 
     if show_start:
-        start_corners = _rectangle_corners(
-            x=0.0,
-            y=0.0,
-            theta=0.0,
-            half_length=model.wb_hlength,
-            half_width=model.wb_hwidth,
-        )
+        start_corners = model.footprint.world_corners(x=0.0, y=0.0, theta=0.0)
         ax.add_patch(Polygon(start_corners, closed=True, fill=False, edgecolor="black", linewidth=1.4))
 
     ax.set_title(f"Boundary-Velocity Rollouts with Oriented Chassis Footprint{title_suffix}")

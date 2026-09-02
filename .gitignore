@@ -2,3 +2,4 @@ __pycache__/
 .pytest_cache/
 *.pdf
 *.txt
+fieldset_generator_barebones/rollout_output/*

@@ -15,7 +15,6 @@ from matplotlib.patches import Polygon
 
 from kinematic_boundary_rollout_limited import (
     _polytope_faces,
-    _rectangle_corners,
     compute_truncated_extents,
     compute_wheel_velocity_limits,
     plot_truncated_polytope,
@@ -187,25 +186,13 @@ def plot_sliding_stopping_rollouts(
 
         for idx_num, state_idx in enumerate(indices):
             x, y, theta = states[state_idx]
-            corners = _rectangle_corners(
-                x=x,
-                y=y,
-                theta=theta,
-                half_length=model.wb_hlength,
-                half_width=model.wb_hwidth,
-            )
+            corners = model.footprint.world_corners(x=x, y=y, theta=theta)
             alpha = 0.12 if (not show_final_only and idx_num < len(indices) - 1) else 0.9
             axis.add_patch(
                 Polygon(corners, closed=True, fill=False, edgecolor="tab:blue", linewidth=0.9, alpha=alpha)
             )
 
-    start_corners = _rectangle_corners(
-        x=0.0,
-        y=0.0,
-        theta=0.0,
-        half_length=model.wb_hlength,
-        half_width=model.wb_hwidth,
-    )
+    start_corners = model.footprint.world_corners(x=0.0, y=0.0, theta=0.0)
     axis.add_patch(Polygon(start_corners, closed=True, fill=False, edgecolor="black", linewidth=1.4))
 
     max_distance = max(stop_distances) if stop_distances else 0.0

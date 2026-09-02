@@ -1,6 +1,7 @@
 import numpy as np
 import pytest
 
+from mecanum_common import RobotFootprint
 from mecanum_physics import (
     MecanumPhysicsParams,
     exact_dynamics_coeffs,
@@ -18,6 +19,23 @@ from mecanum_physics import (
     sliding_deceleration_discrete_emperical,
     wheel_constraint_violation,
 )
+
+
+def test_robot_footprint_world_corners_use_nominal_body_dimensions():
+    footprint = RobotFootprint()
+
+    corners = footprint.world_corners(x=1.0, y=2.0, theta=np.pi / 2.0)
+
+    np.testing.assert_allclose(
+        corners,
+        [
+            [1.0 - footprint.width / 2.0, 2.0 + footprint.length / 2.0],
+            [1.0 + footprint.width / 2.0, 2.0 + footprint.length / 2.0],
+            [1.0 + footprint.width / 2.0, 2.0 - footprint.length / 2.0],
+            [1.0 - footprint.width / 2.0, 2.0 - footprint.length / 2.0],
+        ],
+        atol=1e-12,
+    )
 
 
 def test_params_from_model_copies_physical_attributes():

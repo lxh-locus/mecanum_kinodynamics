@@ -1,4 +1,6 @@
 
+from dataclasses import dataclass
+
 import numpy as np
 import pytest
 
@@ -16,6 +18,35 @@ from mecanum_physics import (
     relax_wheel_velocity_to_constraint,
     wheel_constraint_violation,
 )
+
+
+@dataclass(frozen=True)
+class RobotFootprint:
+    """Rectangular robot body footprint in the body frame (x forward, y left)."""
+
+    length: float = 0.700
+    width: float = 0.481
+
+    def __post_init__(self):
+        if self.length <= 0.0 or self.width <= 0.0:
+            raise ValueError("Footprint length and width must be positive")
+
+    def world_corners(self, x, y, theta):
+        """Return counter-clockwise footprint corners at the given world pose."""
+        half_length = self.length / 2.0
+        half_width = self.width / 2.0
+        c = np.cos(theta)
+        s = np.sin(theta)
+        return np.array(
+            [
+                [x + c * half_length - s * half_width, y + s * half_length + c * half_width],
+                [x + c * half_length + s * half_width, y + s * half_length - c * half_width],
+                [x - c * half_length + s * half_width, y - s * half_length - c * half_width],
+                [x - c * half_length - s * half_width, y - s * half_length + c * half_width],
+            ],
+            dtype=float,
+        )
+
 
 class Mecanum:
     """
@@ -49,6 +80,7 @@ class Mecanum:
         self.body_mass = float(physics_params.body_mass)  # total platform mass, kg
         self.wheel_spin_inertia = float(physics_params.wheel_spin_inertia)  # wheel inertia about spin axis, kg*m^2
         self.body_yaw_inertia = float(physics_params.body_yaw_inertia)  # platform yaw inertia about COM, kg*m^2
+        self.footprint = RobotFootprint()
 
     def _physics_params(self):
         return params_from_model(self)
