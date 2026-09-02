@@ -73,6 +73,10 @@ def sample_boundary_velocities(dynamic_limit, instances):
             velocities.extend(((x_velocity, y_values[0], yaw_rate), (x_velocity, y_values[-1], yaw_rate)))
         for y_velocity in y_values:
             velocities.extend(((x_values[0], y_velocity, yaw_rate), (x_values[-1], y_velocity, yaw_rate)))
+    # for yaw_rate in yaw_values:
+    #         for x_velocity in x_values:
+    #             for y_velocity in y_values:
+    #                 velocities.extend(((x_velocity, y_velocity, yaw_rate), (0,0,0)))
     return velocities
 
 
