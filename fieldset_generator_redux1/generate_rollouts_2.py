@@ -67,6 +67,16 @@ def footprint_corners(footprint, x, y, yaw):
     )
 
 
+def footprint_for_field(robot_revision, field):
+    """Return an appliance footprint when the field is configured with one."""
+    return field.get("appliance", {}).get("footprint", robot_revision["footprint"])
+
+
+def footprint_name_for_field(robot_revision, field):
+    """Return the selected appliance or robot identifier for archive metadata."""
+    return field.get("appliance", {}).get("name", f"robot:{robot_revision.get('subtype', 'default')}")
+
+
 def response_time(robot_revision, generator_params):
     """Return the robot delay plus the slowest configured sensor response time."""
     sensor_times = [sensor["sensor_type"].get("response_time", 0.0) for sensor in robot_revision.get("sensors", [])]
@@ -123,7 +133,17 @@ def rollout_with_response_delay(initial_velocity, wheel_braking_deceleration, pa
     return np.vstack((response_poses, shifted_braking[1:])), stop_time, stopped
 
 
-def save_rollout_data(output_path, initial_velocities, results, dt, delay, field_name, wheel_braking):
+def save_rollout_data(
+    output_path,
+    initial_velocities,
+    results,
+    dt,
+    delay,
+    field_name,
+    wheel_braking,
+    footprint,
+    footprint_name,
+):
     """Save variable-length pose histories as a compressed, padded NumPy archive."""
     trajectories = [trajectory for trajectory, _, _ in results]
     lengths = np.array([trajectory.shape[0] for trajectory in trajectories], dtype=int)
@@ -132,7 +152,7 @@ def save_rollout_data(output_path, initial_velocities, results, dt, delay, field
         poses[index, :lengths[index]] = trajectory
     np.savez_compressed(
         output_path,
-        format_version=1,
+        format_version=3,
         model="sliding_kinodynamic",
         field_name=field_name,
         initial_velocities=np.asarray(initial_velocities, dtype=float),
@@ -143,6 +163,9 @@ def save_rollout_data(output_path, initial_velocities, results, dt, delay, field
         dt=float(dt),
         response_time=float(delay),
         wheel_braking_deceleration=float(wheel_braking),
+        footprint_vertices=np.asarray([footprint_corners(footprint, 0.0, 0.0, 0.0)]),
+        footprint_names=np.asarray([footprint_name]),
+        trajectory_footprint_indices=np.zeros(len(trajectories), dtype=int),
     )
 
 
@@ -175,8 +198,11 @@ def plot_field_rollouts(
             delay,
             field["name"],
             wheel_braking,
+            footprint_for_field(robot_revision, field),
+            footprint_name_for_field(robot_revision, field),
         )
 
+    footprint = footprint_for_field(robot_revision, field)
     figure, axis = plt.subplots(figsize=(10, 10))
     stopped_count = 0
     for trajectory, _, stopped in results:
@@ -184,10 +210,10 @@ def plot_field_rollouts(
         color = "tab:red" if stopped else "tab:orange"
         axis.plot(trajectory[:, 0], trajectory[:, 1], color=color, linewidth=0.8, alpha=0.35)
         x, y, yaw = trajectory[-1]
-        axis.add_patch(Polygon(footprint_corners(robot_revision["footprint"], x, y, yaw), closed=True, fill=False,
+        axis.add_patch(Polygon(footprint_corners(footprint, x, y, yaw), closed=True, fill=False,
                                edgecolor="tab:blue", linewidth=0.6, alpha=0.35))
 
-    axis.add_patch(Polygon(footprint_corners(robot_revision["footprint"], 0.0, 0.0, 0.0), closed=True,
+    axis.add_patch(Polygon(footprint_corners(footprint, 0.0, 0.0, 0.0), closed=True,
                            facecolor="lightsteelblue", edgecolor="black", alpha=0.75))
     vx_range, vy_range, omega_range = velocity_ranges
     axis.set_title(
@@ -216,7 +242,7 @@ def main():
         type=float,
         help="Wheel-speed limit [rad/s]; defaults to robot_revision dynamic_limit velocity max x / wheel radius.",
     )
-    parser.add_argument("--sampling-degree", type=int, default=3, help="Surface sampling degree; degree 0 samples only polytope vertices.")
+    parser.add_argument("--sampling-degree", type=int, default=3, help="Surface sampling degree; degree 0 samples only polytope vertices. Default 3.")
     parser.add_argument(
         "--sampling-method",
         choices=["shrink", "bisect"],

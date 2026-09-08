@@ -6,7 +6,7 @@ from pathlib import Path
 
 import matplotlib
 
-if "--show-figure" not in sys.argv:
+if __name__ == "__main__" and "--show-figure" not in sys.argv:
     matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
@@ -15,14 +15,17 @@ from shapely.geometry import Polygon as ShapelyPolygon
 from shapely.ops import unary_union
 
 
-DEFAULT_FOOTPRINT_LENGTH = 0.812 + 2.0 * 0.065
-DEFAULT_FOOTPRINT_WIDTH = 0.567 + 2.0 * 0.065
-
-
 def load_archive(path):
     """Load and validate the padded pose histories stored in a rollout archive."""
     archive = np.load(path, allow_pickle=False)
-    required_keys = {"field_name", "poses", "lengths"}
+    required_keys = {
+        "field_name",
+        "poses",
+        "lengths",
+        "footprint_vertices",
+        "footprint_names",
+        "trajectory_footprint_indices",
+    }
     missing_keys = required_keys - set(archive.files)
     if missing_keys:
         raise ValueError(f"{path} is missing required keys: {', '.join(sorted(missing_keys))}")
@@ -35,24 +38,26 @@ def load_archive(path):
         raise ValueError(f"{path} lengths must have one value per rollout")
     if np.any(lengths < 1) or np.any(lengths > poses.shape[1]):
         raise ValueError(f"{path} contains invalid trajectory lengths")
-    return archive["field_name"].item(), poses, lengths
+    footprint_vertices = archive["footprint_vertices"]
+    footprint_names = archive["footprint_names"]
+    trajectory_footprint_indices = archive["trajectory_footprint_indices"]
+    if footprint_vertices.ndim != 3 or footprint_vertices.shape[1:] != (4, 2):
+        raise ValueError(f"{path} footprint_vertices must have shape (footprint, 4, 2)")
+    if footprint_names.shape != (footprint_vertices.shape[0],):
+        raise ValueError(f"{path} footprint_names must have one value per footprint")
+    if trajectory_footprint_indices.shape != (poses.shape[0],):
+        raise ValueError(f"{path} trajectory_footprint_indices must have one value per rollout")
+    if np.any(trajectory_footprint_indices < 0) or np.any(trajectory_footprint_indices >= len(footprint_vertices)):
+        raise ValueError(f"{path} contains invalid trajectory footprint indices")
+    return archive["field_name"].item(), poses, lengths, footprint_vertices, trajectory_footprint_indices
 
 
-def footprint_corners(x, y, yaw, length, width):
-    """Return corners for a centered rectangular robot footprint at a pose."""
-    half_length = length / 2.0
-    half_width = width / 2.0
+def footprint_corners(footprint_vertices, x, y, yaw):
+    """Transform body-frame footprint vertices to a world-frame pose."""
     c = np.cos(yaw)
     s = np.sin(yaw)
-    return np.array(
-        [
-            [x + c * half_length - s * half_width, y + s * half_length + c * half_width],
-            [x + c * half_length + s * half_width, y + s * half_length - c * half_width],
-            [x - c * half_length + s * half_width, y - s * half_length - c * half_width],
-            [x - c * half_length - s * half_width, y - s * half_length + c * half_width],
-        ],
-        dtype=float,
-    )
+    rotation = np.array([[c, -s], [s, c]])
+    return footprint_vertices @ rotation.T + np.array([x, y])
 
 
 def polygon_parts(geometry):
@@ -64,15 +69,15 @@ def polygon_parts(geometry):
             yield from polygon_parts(part)
 
 
-def plot_fused_footprints(axis, trajectories, color, label, alpha, line_width):
+def plot_fused_footprints(axis, trajectories, footprint_vertices, footprint_indices, color, label, alpha, line_width):
     """Union and draw every saved footprint pose in one archive."""
     chunk_size = 256
     fused_chunks = []
     footprint_polygons = []
-    for trajectory in trajectories:
+    for trajectory, footprint_index in zip(trajectories, footprint_indices):
         for x, y, yaw in trajectory:
             footprint_polygons.append(
-                ShapelyPolygon(footprint_corners(x, y, yaw, DEFAULT_FOOTPRINT_LENGTH, DEFAULT_FOOTPRINT_WIDTH))
+                ShapelyPolygon(footprint_corners(footprint_vertices[footprint_index], x, y, yaw))
             )
             if len(footprint_polygons) == chunk_size:
                 fused_chunks.append(unary_union(footprint_polygons))
@@ -92,16 +97,27 @@ def plot_fused_footprints(axis, trajectories, color, label, alpha, line_width):
         for interior in polygon.interiors:
             hole = np.asarray(interior.coords)
             axis.plot(hole[:, 0], hole[:, 1], color=color, linewidth=line_width, alpha=alpha)
+    hull = np.asarray(fused_footprint.convex_hull.exterior.coords)
+    axis.plot(
+        hull[:, 0],
+        hull[:, 1],
+        color=color,
+        linewidth=line_width,
+        alpha=alpha,
+        linestyle="--",
+    )
 
 
 def plot_archive(axis, path, color, label, alpha, line_width, show_trajectories, show_footprints, fuse_footprints):
     """Plot selected trajectory and terminal-footprint data from one archive."""
-    field_name, poses, lengths = load_archive(path)
+    field_name, poses, lengths, footprint_vertices, footprint_indices = load_archive(path)
     trajectories = []
+    trajectory_footprint_indices = []
     for index, length in enumerate(lengths):
         trajectory = poses[index, :length]
         if show_footprints and fuse_footprints:
             trajectories.append(trajectory)
+            trajectory_footprint_indices.append(footprint_indices[index])
         if show_trajectories:
             axis.plot(
                 trajectory[:, 0],
@@ -116,7 +132,7 @@ def plot_archive(axis, path, color, label, alpha, line_width, show_trajectories,
                 x, y, yaw = trajectory[-1]
                 axis.add_patch(
                     Polygon(
-                        footprint_corners(x, y, yaw, DEFAULT_FOOTPRINT_LENGTH, DEFAULT_FOOTPRINT_WIDTH),
+                        footprint_corners(footprint_vertices[footprint_indices[index]], x, y, yaw),
                         closed=True,
                         fill=False,
                         edgecolor=color,
@@ -125,8 +141,17 @@ def plot_archive(axis, path, color, label, alpha, line_width, show_trajectories,
                     )
                 )
     if show_footprints and fuse_footprints:
-        plot_fused_footprints(axis, trajectories, color, label, alpha, line_width)
-    return field_name, len(lengths)
+        plot_fused_footprints(
+            axis,
+            trajectories,
+            footprint_vertices,
+            trajectory_footprint_indices,
+            color,
+            label,
+            alpha,
+            line_width,
+        )
+    return field_name, len(lengths), footprint_vertices
 
 
 def main():
@@ -171,20 +196,9 @@ def main():
         raise ValueError("fuse-footprints requires show-footprints")
 
     figure, axis = plt.subplots(figsize=(10, 10))
-    if args.show_footprints:
-        axis.add_patch(
-            Polygon(
-                footprint_corners(0.0, 0.0, 0.0, DEFAULT_FOOTPRINT_LENGTH, DEFAULT_FOOTPRINT_WIDTH),
-                closed=True,
-                facecolor="lightsteelblue",
-                edgecolor="black",
-                alpha=0.75,
-                label="start footprint",
-            )
-        )
     for archive_path, color in args.archive:
         path = Path(archive_path)
-        field_name, count = plot_archive(
+        field_name, count, footprint_vertices = plot_archive(
             axis,
             path,
             color,
@@ -195,6 +209,18 @@ def main():
             args.show_footprints,
             args.fuse_footprints,
         )
+        if args.show_footprints:
+            for footprint_index, footprint_vertices_for_start in enumerate(footprint_vertices):
+                axis.add_patch(
+                    Polygon(
+                        footprint_corners(footprint_vertices_for_start, 0.0, 0.0, 0.0),
+                        closed=True,
+                        facecolor="lightsteelblue",
+                        edgecolor="black",
+                        alpha=0.75,
+                        label="start footprint" if path == Path(args.archive[0][0]) and footprint_index == 0 else None,
+                    )
+                )
         print(f"{path}: {count} {field_name} rollouts, color {color}")
 
     if args.show_trajectories:

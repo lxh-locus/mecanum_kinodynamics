@@ -52,6 +52,16 @@ def footprint_corners(footprint, x, y, yaw):
     )
 
 
+def footprint_for_field(robot_revision, field):
+    """Return an appliance footprint when the field is configured with one."""
+    return field.get("appliance", {}).get("footprint", robot_revision["footprint"])
+
+
+def footprint_name_for_field(robot_revision, field):
+    """Return the selected appliance or robot identifier for archive metadata."""
+    return field.get("appliance", {}).get("name", f"robot:{robot_revision.get('subtype', 'default')}")
+
+
 def linspace_limits(velocity_limits, axis, instances):
     """Sample one configured velocity axis, including both endpoint limits."""
     return np.linspace(
@@ -123,7 +133,7 @@ def response_time(robot_revision, generator_params):
     return float(generator_params.get("robot_response_time", 0.0)) + max(sensor_times, default=0.0)
 
 
-def save_rollout_data(output_path, initial_velocities, trajectories, dt, delay, field_name):
+def save_rollout_data(output_path, initial_velocities, trajectories, dt, delay, field_name, footprint, footprint_name):
     """Save variable-length pose histories as a compressed, padded NumPy archive."""
     lengths = np.array([trajectory.shape[0] for trajectory in trajectories], dtype=int)
     poses = np.full((len(trajectories), lengths.max(), 3), np.nan, dtype=float)
@@ -131,7 +141,7 @@ def save_rollout_data(output_path, initial_velocities, trajectories, dt, delay, 
         poses[index, :lengths[index]] = trajectory
     np.savez_compressed(
         output_path,
-        format_version=1,
+        format_version=3,
         model="independent_axis_braking",
         field_name=field_name,
         initial_velocities=np.asarray(initial_velocities, dtype=float),
@@ -139,6 +149,9 @@ def save_rollout_data(output_path, initial_velocities, trajectories, dt, delay, 
         lengths=lengths,
         dt=float(dt),
         response_time=float(delay),
+        footprint_vertices=np.asarray([footprint_corners(footprint, 0.0, 0.0, 0.0)]),
+        footprint_names=np.asarray([footprint_name]),
+        trajectory_footprint_indices=np.zeros(len(trajectories), dtype=int),
     )
 
 
@@ -158,16 +171,26 @@ def plot_field_rollouts(robot_revision, field, generator_params, dt, output_path
         for velocity in initial_velocities
     ]
     if data_output_path is not None:
-        save_rollout_data(data_output_path, initial_velocities, trajectories, dt, delay, field["name"])
+        save_rollout_data(
+            data_output_path,
+            initial_velocities,
+            trajectories,
+            dt,
+            delay,
+            field["name"],
+            footprint_for_field(robot_revision, field),
+            footprint_name_for_field(robot_revision, field),
+        )
 
+    footprint = footprint_for_field(robot_revision, field)
     figure, axis = plt.subplots(figsize=(10, 10))
     for trajectory in trajectories:
         axis.plot(trajectory[:, 0], trajectory[:, 1], color="tab:red", linewidth=0.8, alpha=0.35)
         x, y, yaw = trajectory[-1]
-        axis.add_patch(Polygon(footprint_corners(robot_revision["footprint"], x, y, yaw), closed=True, fill=False,
+        axis.add_patch(Polygon(footprint_corners(footprint, x, y, yaw), closed=True, fill=False,
                                  edgecolor="tab:blue", linewidth=0.6, alpha=0.35))
 
-    axis.add_patch(Polygon(footprint_corners(robot_revision["footprint"], 0.0, 0.0, 0.0), closed=True,
+    axis.add_patch(Polygon(footprint_corners(footprint, 0.0, 0.0, 0.0), closed=True,
                            facecolor="lightsteelblue", edgecolor="black", alpha=0.75))
     velocity_limits = field["dynamic_limit"]["velocity"]
     axis.set_title(
