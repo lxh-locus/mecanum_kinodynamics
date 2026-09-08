@@ -236,7 +236,7 @@ def main():
             "brakes the robot."
         )
     )
-    parser.add_argument("--max-wheel-velocity", type=float, default=10.0, help="Wheel-speed limit [rad/s].")
+    parser.add_argument("--max-wheel-velocity", type=float, default=21.0, help="Wheel-speed limit [rad/s].")
     parser.add_argument(
         "--max-body-x-deceleration",
         type=float,

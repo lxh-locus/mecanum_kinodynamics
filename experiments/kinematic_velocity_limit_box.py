@@ -246,8 +246,8 @@ def main():
 	parser.add_argument(
 		"--max-wheel-velocity",
 		type=float,
-		default=10.0,
-		help="Maximum absolute wheel velocity in rad/s (default: 10.0).",
+		default=21.0,
+		help="Maximum absolute wheel velocity in rad/s (default: 21.0).",
 	)
 	parser.add_argument(
 		"--range-scale",

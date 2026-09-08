@@ -330,7 +330,7 @@ def main():
             "chassis rectangles alongside the truncated 3D polytope."
         )
     )
-    parser.add_argument("--max-wheel-velocity", type=float, default=10.0, help="Wheel-speed limit [rad/s].")
+    parser.add_argument("--max-wheel-velocity", type=float, default=21.0, help="Wheel-speed limit [rad/s].")
     parser.add_argument(
         "--sampling-degree",
         type=int,

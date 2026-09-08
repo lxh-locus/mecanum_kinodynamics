@@ -240,7 +240,8 @@ def main():
     parser.add_argument(
         "--max-wheel-velocity",
         type=float,
-        help="Wheel-speed limit [rad/s]; defaults to robot_revision dynamic_limit velocity max x / wheel radius.",
+        default=21.0,
+        help="Wheel-speed limit [rad/s].",
     )
     parser.add_argument("--sampling-degree", type=int, default=3, help="Surface sampling degree; degree 0 samples only polytope vertices. Default 3.")
     parser.add_argument(

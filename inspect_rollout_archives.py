@@ -6,6 +6,7 @@ detail panel then draws that rollout together with the nearest-initial-velocity
 rollout from every other archive, including their swept footprints.
 """
 import argparse
+import logging
 import sys
 from pathlib import Path
 
@@ -16,6 +17,11 @@ from matplotlib.patches import Polygon
 from overlay_rollout_archives import footprint_corners, load_archive
 
 MAX_DETAIL_FOOTPRINTS = 80
+
+# equal-aspect panels expand a limit on every zoom by design; the log record is just noise
+logging.getLogger("matplotlib.axes._base").addFilter(
+    lambda record: "to fulfill fixed data aspect" not in record.getMessage()
+)
 
 
 def load_inspection_archive(path):
@@ -114,7 +120,8 @@ def draw_overlay(axis, archives, colors, alpha, line_width):
     axis.set_title("Click a trajectory endpoint")
     axis.set_xlabel("world x [m]")
     axis.set_ylabel("world y [m]")
-    axis.set_aspect("equal", adjustable="box")
+    # datalim keeps the axes rectangle fixed while zooming instead of resizing the panel
+    axis.set_aspect("equal", adjustable="datalim")
     axis.grid(True, alpha=0.25)
     axis.legend(loc="best", fontsize="small")
     return pickable
@@ -187,7 +194,10 @@ def draw_velocity(axis, entries):
     limit *= 1.3
     axis.set_xlim(-limit, limit)
     axis.set_ylim(-limit, limit)
-    axis.set_aspect("equal", adjustable="box")
+    # a square box makes the symmetric limits already satisfy equal aspect, so datalim
+    # adjustment cannot shrink an axis and hide the arrows (they never enter dataLim)
+    axis.set_box_aspect(1.0)
+    axis.set_aspect("equal", adjustable="datalim")
     axis.grid(True, alpha=0.25)
 
 
@@ -279,7 +289,7 @@ def main():
     scatters = draw_overlay(overlay_axis, archives, colors, args.alpha, args.line_width)
     scatter_archive = {id(scatter): position for position, scatter in enumerate(scatters)}
     detail_axis.set_title("select an endpoint to inspect a rollout")
-    detail_axis.set_aspect("equal", adjustable="box")
+    detail_axis.set_aspect("equal", adjustable="datalim")
     detail_axis.grid(True, alpha=0.25)
     draw_velocity(velocity_axis, [])
     draw_velocity_profile(profile_axis, [])
@@ -315,7 +325,7 @@ def main():
         detail_axis.set_ylabel("world y [m]")
         detail_axis.relim()
         detail_axis.autoscale_view()
-        detail_axis.set_aspect("equal", adjustable="box")
+        detail_axis.set_aspect("equal", adjustable="datalim")
         detail_axis.grid(True, alpha=0.25)
         detail_axis.legend(loc="best", fontsize="small")
 

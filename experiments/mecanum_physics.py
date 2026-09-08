@@ -29,7 +29,7 @@ class MecanumPhysicsParams:
 
     wb_hwidth: float = 0.2405
     wb_hlength: float = 0.25
-    wheel_radius: float = 0.10
+    wheel_radius: float = 3*0.0254
     body_mass: float = 100.0
     wheel_spin_inertia: float = 0.08
     body_yaw_inertia: float = 1.2

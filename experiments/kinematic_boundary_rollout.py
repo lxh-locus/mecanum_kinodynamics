@@ -105,7 +105,7 @@ def main():
             "roll out constant-twist trajectories, and plot oriented chassis rectangles."
         )
     )
-    parser.add_argument("--max-wheel-velocity", type=float, default=10.0, help="Wheel-speed limit [rad/s].")
+    parser.add_argument("--max-wheel-velocity", type=float, default=21.0, help="Wheel-speed limit [rad/s].")
     parser.add_argument(
         "--sampling-degree",
         type=int,
