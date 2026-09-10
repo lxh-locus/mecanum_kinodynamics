@@ -26,7 +26,7 @@ try:
     from .mecanum_physics import (
         MecanumPhysicsParams,
         individual_wheel_braking_deceleration,
-        sliding_deceleration,
+        sliding_deceleration_coulomb_model,
     )
     from .sliding_deceleration_xy import plot_sliding_deceleration_xy
 except ImportError:
@@ -42,7 +42,7 @@ except ImportError:
     from mecanum_physics import (
         MecanumPhysicsParams,
         individual_wheel_braking_deceleration,
-        sliding_deceleration,
+        sliding_deceleration_coulomb_model,
     )
     from sliding_deceleration_xy import plot_sliding_deceleration_xy
 
@@ -122,7 +122,7 @@ def rollout_sliding_deceleration(
         if step <= 0.0:
             break
 
-        acceleration = sliding_deceleration(
+        acceleration = sliding_deceleration_coulomb_model(
             velocity,
             wheel_braking_deceleration=wheel_braking_deceleration,
             params=params,
@@ -397,7 +397,7 @@ def main():
         max_body_x_deceleration=args.max_body_x_deceleration,
         range_scale=args.direction_range_scale,
         angle_sweep=args.sweep_n_angles,
-        deceleration_fn=sliding_deceleration,
+        deceleration_fn=sliding_deceleration_coulomb_model,
     )
     plt.show()
 

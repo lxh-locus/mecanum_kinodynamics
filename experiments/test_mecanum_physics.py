@@ -15,7 +15,7 @@ from mecanum_physics import (
     inverse_kinematics,
     params_from_model,
     relax_wheel_velocity_to_constraint,
-    sliding_deceleration,
+    sliding_deceleration_coulomb_model,
     sliding_deceleration_discrete_emperical,
     wheel_constraint_violation,
 )
@@ -132,7 +132,7 @@ def test_individual_wheel_braking_deceleration_rejects_invalid_inputs():
 
 
 def test_sliding_deceleration_returns_zero_for_stationary_body():
-    actual = sliding_deceleration([0.0, 0.0, 0.0], 1.0)
+    actual = sliding_deceleration_coulomb_model([0.0, 0.0, 0.0], 1.0)
 
     np.testing.assert_allclose(actual, np.zeros(3))
 
@@ -140,13 +140,13 @@ def test_sliding_deceleration_returns_zero_for_stationary_body():
 def test_sliding_deceleration_calibrates_body_x_braking_without_yaw():
     wheel_braking = individual_wheel_braking_deceleration(4.0)
 
-    actual = sliding_deceleration([1.0, 0.0, 0.0], wheel_braking)
+    actual = sliding_deceleration_coulomb_model([1.0, 0.0, 0.0], wheel_braking)
 
     np.testing.assert_allclose(actual, [-4.0, 0.0, 0.0], atol=1e-12)
 
 
 def test_sliding_deceleration_includes_yaw_moment_from_contact_forces():
-    actual = sliding_deceleration([0.0, 0.0, 1.0], 1.0)
+    actual = sliding_deceleration_coulomb_model([0.0, 0.0, 1.0], 1.0)
 
     assert actual[0] == pytest.approx(0.0, abs=1e-12)
     assert actual[1] == pytest.approx(0.0, abs=1e-12)
@@ -155,13 +155,13 @@ def test_sliding_deceleration_includes_yaw_moment_from_contact_forces():
 
 def test_sliding_deceleration_rejects_invalid_inputs():
     with pytest.raises(ValueError, match="shape"):
-        sliding_deceleration([1.0], 1.0)
+        sliding_deceleration_coulomb_model([1.0], 1.0)
 
     with pytest.raises(ValueError, match="positive"):
-        sliding_deceleration([1.0, 0.0], 0.0)
+        sliding_deceleration_coulomb_model([1.0, 0.0], 0.0)
 
     with pytest.raises(ValueError, match="tolerance"):
-        sliding_deceleration([1.0, 0.0], 1.0, tolerance=0.0)
+        sliding_deceleration_coulomb_model([1.0, 0.0], 1.0, tolerance=0.0)
 
 
 def test_sliding_deceleration_discrete_emperical_uses_cardinal_value_on_axes():

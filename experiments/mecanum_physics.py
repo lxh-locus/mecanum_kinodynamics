@@ -270,7 +270,7 @@ def individual_wheel_braking_deceleration(
     return max_body_x_deceleration / body_x_gain
 
 
-def sliding_deceleration(
+def sliding_deceleration_coulomb_model(
     body_velocity,
     wheel_braking_deceleration,
     params: MecanumPhysicsParams = MecanumPhysicsParams(),
@@ -578,7 +578,7 @@ __all__ = [
     "forward_dynamics_linear",
     "inverse_dynamics_linear",
     "individual_wheel_braking_deceleration",
-    "sliding_deceleration",
+    "sliding_deceleration_coulomb_model",
     "sliding_deceleration_discrete_emperical",
     "exact_dynamics_coeffs",
     "forward_dynamics_exact",
