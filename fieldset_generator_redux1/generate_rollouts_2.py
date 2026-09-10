@@ -29,7 +29,7 @@ from experiments.kinematic_boundary_rollout_limited import (
 )
 from experiments.mecanum_common import Mecanum
 from experiments.mecanum_physics import MecanumPhysicsParams
-from experiments.mecanum_sliding import individual_wheel_braking_deceleration, rollout_sliding_deceleration
+from experiments.mecanum_sliding import individual_wheel_braking_deceleration, rollout_sliding_deceleration_coulomb
 
 
 DEFAULT_CONFIG = Path(__file__).with_name("fieldset_config.json")
@@ -116,7 +116,7 @@ def integrate_response_delay(initial_velocity, duration, dt):
 def rollout_with_response_delay(initial_velocity, wheel_braking_deceleration, params, delay, dt, max_time):
     """Hold velocity during response delay, then append a sliding-model braking rollout."""
     response_poses = integrate_response_delay(initial_velocity, delay, dt)
-    braking_poses, _, stop_time, stopped = rollout_sliding_deceleration(
+    braking_poses, _, stop_time, stopped = rollout_sliding_deceleration_coulomb(
         initial_velocity,
         wheel_braking_deceleration=wheel_braking_deceleration,
         params=params,

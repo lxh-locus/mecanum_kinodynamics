@@ -7,7 +7,7 @@ swept-footprint path on the right. This mirrors the bottom-left (velocity
 profile) and top-right (rollout detail) panels of inspect_rollout_archives.py.
 
 Strategies compared:
-- sliding roller friction (mecanum_sliding.rollout_sliding_deceleration)
+- sliding roller friction, coulomb model (mecanum_sliding.rollout_sliding_deceleration_coulomb)
 - sliding roller friction, continuous approximation (mecanum_sliding.rollout_sliding_deceleration_approx)
 - independent axis braking (mecanum_sliding.rollout_independent_axis_braking)
 - discrete empirical heading-dependent braking (mecanum_sliding.rollout_discrete_empirical_deceleration)
@@ -26,7 +26,7 @@ try:
         individual_wheel_braking_deceleration,
         rollout_discrete_empirical_deceleration,
         rollout_independent_axis_braking,
-        rollout_sliding_deceleration,
+        rollout_sliding_deceleration_coulomb,
         rollout_sliding_deceleration_approx,
     )
 except ImportError:
@@ -36,7 +36,7 @@ except ImportError:
         individual_wheel_braking_deceleration,
         rollout_discrete_empirical_deceleration,
         rollout_independent_axis_braking,
-        rollout_sliding_deceleration,
+        rollout_sliding_deceleration_coulomb,
         rollout_sliding_deceleration_approx,
     )
 
@@ -64,7 +64,7 @@ def plot_velocity_profiles(axis, strategies, dt):
 
 
 def plot_velocity_and_energy(axis, strategies, dt, params):
-    """Draw vx/vy/omega vs time, plus a twin-axis kinetic energy trace, for every strategy."""
+    """Draw vx/vy/omega vs time, plus a twin-axis kinetic-energy power trace, for every strategy."""
     axis.axhline(0.0, color="0.7", linewidth=0.8)
     styles = (("vx", "-"), ("vy", "--"), ("\u03c9", ":"))
     for label, color, _, velocities in strategies:
@@ -78,23 +78,31 @@ def plot_velocity_and_energy(axis, strategies, dt, params):
                 linewidth=1.4,
                 label=f"{label} {name}",
             )
-    axis.set_title("body velocity and kinetic energy vs time", fontsize="medium")
+    axis.set_title("body velocity and power vs time", fontsize="medium")
     axis.set_xlabel("time [s]")
     axis.set_ylabel("vx, vy [m/s]   \u03c9 [rad/s]")
     axis.grid(True, alpha=0.25)
 
-    energy_axis = axis.twinx()
+    power_axis = axis.twinx()
+    power_axis.axhline(0.0, color="0.7", linewidth=0.6, linestyle=":")
     for label, color, _, velocities in strategies:
         times = np.arange(len(velocities)) * dt
         # translational + rotational kinetic energy, using the same body model as the rollout
         energy = 0.5 * params.body_mass * np.sum(velocities[:, :2] ** 2, axis=1) + 0.5 * params.body_yaw_inertia * velocities[:, 2] ** 2
-        energy_axis.plot(times, energy, color=color, linestyle="-.", linewidth=1.8, alpha=0.6, label=f"{label} energy")
-    energy_axis.set_ylabel("kinetic energy [J]")
-    energy_axis.set_ylim(bottom=0.0)
+        # power is the rate of change of kinetic energy (negative while braking dissipates it)
+        power = np.gradient(energy, dt) if len(times) > 1 else np.zeros_like(energy)
+        power_axis.plot(times, power, color=color, linestyle="-.", linewidth=1.6, alpha=0.6, label=f"{label} power")
+    power_axis.set_ylabel("power [W]")
 
     lines, labels = axis.get_legend_handles_labels()
-    energy_lines, energy_labels = energy_axis.get_legend_handles_labels()
-    axis.legend(lines + energy_lines, labels + energy_labels, loc="best", fontsize="x-small", ncol=len(strategies))
+    power_lines, power_labels = power_axis.get_legend_handles_labels()
+    axis.legend(
+        lines + power_lines,
+        labels + power_labels,
+        loc="best",
+        fontsize="x-small",
+        ncol=len(strategies),
+    )
 
 
 def plot_rollout_paths(axis, strategies, footprint, max_footprints):
@@ -219,19 +227,28 @@ def main():
     model = Mecanum(params=params)
 
     strategies = []
+    if "independent-axis" in selected:
+        axis_states, axis_velocities = rollout_independent_axis_braking(
+            initial_velocity,
+            brake_deceleration=(args.brake_deceleration_x, args.brake_deceleration_y, args.brake_deceleration_yaw),
+            dt=args.dt,
+        )
+        print(f"independent axis braking: stop_time={len(axis_velocities) * args.dt:.3f} s")
+        strategies.append(("independent axis braking", "tab:blue", axis_states, axis_velocities))
+
     if "sliding-coulomb" in selected:
         wheel_braking_deceleration = individual_wheel_braking_deceleration(
             args.max_body_x_deceleration, params=params
         )
-        slide_states, slide_velocities, stop_time, stopped = rollout_sliding_deceleration(
+        slide_states, slide_velocities, stop_time, stopped = rollout_sliding_deceleration_coulomb(
             initial_velocity,
             wheel_braking_deceleration=wheel_braking_deceleration,
             params=params,
             dt=args.dt,
             max_time=args.max_time,
         )
-        print(f"sliding roller friction: stop_time={stop_time:.3f} s, stopped={stopped}")
-        strategies.append(("sliding roller friction", "tab:red", slide_states, slide_velocities))
+        print(f"sliding roller friction (Coulomb): stop_time={stop_time:.3f} s, stopped={stopped}")
+        strategies.append(("sliding roller friction (Coulomb)", "tab:red", slide_states, slide_velocities))
 
     if "sliding-approx" in selected:
         approx_wheel_braking_deceleration = individual_wheel_braking_deceleration(
@@ -246,15 +263,6 @@ def main():
         )
         print(f"sliding roller friction (approx): stop_time={approx_stop_time:.3f} s, stopped={approx_stopped}")
         strategies.append(("sliding roller friction (approx)", "tab:purple", approx_states, approx_velocities))
-
-    if "independent-axis" in selected:
-        axis_states, axis_velocities = rollout_independent_axis_braking(
-            initial_velocity,
-            brake_deceleration=(args.brake_deceleration_x, args.brake_deceleration_y, args.brake_deceleration_yaw),
-            dt=args.dt,
-        )
-        print(f"independent axis braking: stop_time={len(axis_velocities) * args.dt:.3f} s")
-        strategies.append(("independent axis braking", "tab:blue", axis_states, axis_velocities))
 
     if "discrete-empirical" in selected:
         empirical_states, empirical_velocities, empirical_stop_time, empirical_stopped = (

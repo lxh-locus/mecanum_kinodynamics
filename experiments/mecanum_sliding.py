@@ -364,7 +364,7 @@ def _advance_body_velocity(body_velocity, body_acceleration, dt, speed_tolerance
     return next_velocity
 
 
-def rollout_sliding_deceleration(
+def rollout_sliding_deceleration_coulomb(
     body_velocity,
     wheel_braking_deceleration,
     params=None,
@@ -693,7 +693,7 @@ __all__ = [
     "sliding_deceleration_approx_model",
     "sliding_deceleration_coulomb_model",
     "sliding_deceleration_discrete_emperical",
-    "rollout_sliding_deceleration",
+    "rollout_sliding_deceleration_coulomb",
     "rollout_sliding_deceleration_approx",
     "rollout_discrete_empirical_deceleration",
     "rollout_independent_axis_braking",

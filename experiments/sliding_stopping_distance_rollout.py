@@ -26,7 +26,7 @@ try:
     from .mecanum_physics import MecanumPhysicsParams
     from .mecanum_sliding import (
         individual_wheel_braking_deceleration,
-        rollout_sliding_deceleration,
+        rollout_sliding_deceleration_coulomb,
         sliding_deceleration_coulomb_model,
     )
     from .sliding_deceleration_xy import plot_sliding_deceleration_xy
@@ -43,7 +43,7 @@ except ImportError:
     from mecanum_physics import MecanumPhysicsParams
     from mecanum_sliding import (
         individual_wheel_braking_deceleration,
-        rollout_sliding_deceleration,
+        rollout_sliding_deceleration_coulomb,
         sliding_deceleration_coulomb_model,
     )
     from sliding_deceleration_xy import plot_sliding_deceleration_xy
@@ -69,7 +69,7 @@ def plot_sliding_stopping_rollouts(
     stopped_count = 0
 
     for command in boundary_velocities:
-        states, _, stop_time, stopped = rollout_sliding_deceleration(
+        states, _, stop_time, stopped = rollout_sliding_deceleration_coulomb(
             command,
             wheel_braking_deceleration=wheel_braking_deceleration,
             params=params,
