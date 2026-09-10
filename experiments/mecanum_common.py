@@ -96,6 +96,7 @@ class Mecanum:
         self.body_mass = float(physics_params.body_mass)  # total platform mass, kg
         self.wheel_spin_inertia = float(physics_params.wheel_spin_inertia)  # wheel inertia about spin axis, kg*m^2
         self.body_yaw_inertia = float(physics_params.body_yaw_inertia)  # platform yaw inertia about COM, kg*m^2
+        self.max_wheel_velocity = float(physics_params.max_wheel_velocity)  # default wheel-speed limit, rad/s
         self.footprint = RobotFootprint()
 
     def _physics_params(self):

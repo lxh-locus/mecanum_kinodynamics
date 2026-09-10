@@ -21,6 +21,8 @@ class MecanumPhysicsParams:
         body_mass: Platform mass in kilograms.
         wheel_spin_inertia: Per-wheel spin inertia in kg m^2.
         body_yaw_inertia: Platform yaw inertia in kg m^2.
+        max_wheel_velocity: Default wheel-speed limit in rad/s, used as the
+            shared default across experiment scripts.
         roller_directions: Four roller rotation-axis directions in the body
             frame, ordered as front-left, front-right, rear-left, rear-right.
             The body frame is FLU: x forward, y left, and z up. Each direction
@@ -33,6 +35,7 @@ class MecanumPhysicsParams:
     body_mass: float = 100.0
     wheel_spin_inertia: float = 0.08
     body_yaw_inertia: float = 1.2
+    max_wheel_velocity: float = 21.0
     roller_directions: tuple = (
         (1.0, -1.0),
         (1.0, 1.0),
@@ -49,6 +52,7 @@ def params_from_model(model) -> MecanumPhysicsParams:
     Returns:
         A new immutable ``MecanumPhysicsParams`` instance.
     """
+    default_max_wheel_velocity = MecanumPhysicsParams().max_wheel_velocity
     return MecanumPhysicsParams(
         wb_hwidth=float(model.wb_hwidth),
         wb_hlength=float(model.wb_hlength),
@@ -56,6 +60,7 @@ def params_from_model(model) -> MecanumPhysicsParams:
         body_mass=float(model.body_mass),
         wheel_spin_inertia=float(model.wheel_spin_inertia),
         body_yaw_inertia=float(model.body_yaw_inertia),
+        max_wheel_velocity=float(getattr(model, "max_wheel_velocity", default_max_wheel_velocity)),
     )
 
 

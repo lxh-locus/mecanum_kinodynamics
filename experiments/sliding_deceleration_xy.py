@@ -58,7 +58,7 @@ def _directional_decelerations(
 
 def plot_sliding_deceleration_xy(
     params=None,
-    max_wheel_velocity=21.0,
+    max_wheel_velocity=MecanumPhysicsParams().max_wheel_velocity,
     max_body_x_deceleration=4.0,
     range_scale=1.15,
     angle_sweep=16,
@@ -165,7 +165,7 @@ def main():
             "body vx/vy velocities with zero yaw rate."
         )
     )
-    parser.add_argument("--max-wheel-velocity", type=float, default=21.0)
+    parser.add_argument("--max-wheel-velocity", type=float, default=MecanumPhysicsParams().max_wheel_velocity)
     parser.add_argument("--max-body-x-deceleration", type=float, default=4.0)
     parser.add_argument("--range-scale", type=float, default=1.15)
     parser.add_argument("--sweep-n-angles", type=int, default=16)

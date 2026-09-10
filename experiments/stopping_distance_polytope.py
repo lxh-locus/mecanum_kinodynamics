@@ -263,8 +263,8 @@ def main():
     parser.add_argument(
         "--max-wheel-velocity",
         type=float,
-        default=21.0,
-        help="Maximum absolute wheel velocity in rad/s (default: 21.0).",
+        default=Mecanum().max_wheel_velocity,
+        help="Maximum absolute wheel velocity in rad/s (default: from MecanumPhysicsParams).",
     )
     parser.add_argument(
         "--max-torque",

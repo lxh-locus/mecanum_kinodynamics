@@ -202,6 +202,48 @@ def sample_boundary_velocities(vertices, faces, sampling_degree=0):
     return points[np.sort(unique_idx)]
 
 
+def sample_box_bound_sides(
+    vx_range,
+    vy_range,
+    omega_range,
+    vx_instances=4,
+    vy_instances=4,
+    omega_instances=4,
+):
+    """Sample the lateral side faces of a vx/vy/omega box. No "top" or "bottom" face
+
+    Ports fieldset_generator_barebones/generate_rollouts.py's
+    ``sample_boundary_velocities``: every omega level (including interior
+    levels) is swept, and each level contributes only the perimeter of its
+    vx/vy rectangle rather than the full rectangle interior.
+
+    Args:
+        vx_range: ``(min, max)`` body vx bounds.
+        vy_range: ``(min, max)`` body vy bounds.
+        omega_range: ``(min, max)`` body omega bounds.
+        vx_instances: Number of vx samples per omega level, including both endpoints.
+        vy_instances: Number of vy samples per omega level, including both endpoints.
+        omega_instances: Number of swept omega levels, including both endpoints.
+    Returns:
+        An ``(M, 3)`` array of ``[vx, vy, omega]`` boundary samples.
+    """
+    if any(count < 2 for count in (vx_instances, vy_instances, omega_instances)):
+        raise ValueError("vx_instances, vy_instances, and omega_instances must each be at least two")
+
+    vx_values = np.linspace(vx_range[0], vx_range[1], num=vx_instances)
+    vy_values = np.linspace(vy_range[0], vy_range[1], num=vy_instances)
+    omega_values = np.linspace(omega_range[0], omega_range[1], num=omega_instances)
+
+    points = []
+    for omega in omega_values:
+        for vx in vx_values:
+            points.extend(((vx, vy_values[0], omega), (vx, vy_values[-1], omega)))
+        for vy in vy_values:
+            points.extend(((vx_values[0], vy, omega), (vx_values[-1], vy, omega)))
+
+    return np.array(points, dtype=float)
+
+
 def _face_normal(face_pts):
     """Return a unit normal for a planar, ordered polygon.
 
