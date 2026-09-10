@@ -34,8 +34,8 @@ class MecanumPhysicsParams:
     wheel_radius: float = 3*0.0254
     body_mass: float = 100.0
     wheel_spin_inertia: float = 0.08
-    body_yaw_inertia: float = 1.2
-    max_wheel_velocity: float = 21.0
+    body_yaw_inertia: float = 8.174 # 1/12*100*(.812^2 + .567^2)
+    max_wheel_velocity: float = 26.25 # From 2m/s max wheel velocity
     roller_directions: tuple = (
         (1.0, -1.0),
         (1.0, 1.0),
