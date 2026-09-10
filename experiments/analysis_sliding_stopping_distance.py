@@ -7,10 +7,10 @@ swept-footprint path on the right. This mirrors the bottom-left (velocity
 profile) and top-right (rollout detail) panels of inspect_rollout_archives.py.
 
 Strategies compared:
-- sliding roller friction (sliding_stopping_distance_rollout.rollout_sliding_deceleration)
-- sliding roller friction, continuous approximation (mecanum_physics.sliding_deceleration_approx_model)
-- independent axis braking (fieldset_generator_barebones/generate_rollouts.py's rollout)
-- discrete empirical heading-dependent braking (mecanum_physics.sliding_deceleration_discrete_emperical)
+- sliding roller friction (mecanum_sliding.rollout_sliding_deceleration)
+- sliding roller friction, continuous approximation (mecanum_sliding.rollout_sliding_deceleration_approx)
+- independent axis braking (mecanum_sliding.rollout_independent_axis_braking)
+- discrete empirical heading-dependent braking (mecanum_sliding.rollout_discrete_empirical_deceleration)
 """
 import argparse
 import sys
@@ -21,264 +21,24 @@ from matplotlib.patches import Polygon
 
 try:
     from .mecanum_common import Mecanum
-    from .mecanum_physics import (
-        MecanumPhysicsParams,
+    from .mecanum_physics import MecanumPhysicsParams
+    from .mecanum_sliding import (
         individual_wheel_braking_deceleration,
-        sliding_deceleration_approx_model,
-        sliding_deceleration_discrete_emperical,
-    )
-    from .sliding_stopping_distance_rollout import (
-        _advance_body_velocity,
-        _is_stopped,
+        rollout_discrete_empirical_deceleration,
+        rollout_independent_axis_braking,
         rollout_sliding_deceleration,
+        rollout_sliding_deceleration_approx,
     )
 except ImportError:
     from mecanum_common import Mecanum
-    from mecanum_physics import (
-        MecanumPhysicsParams,
+    from mecanum_physics import MecanumPhysicsParams
+    from mecanum_sliding import (
         individual_wheel_braking_deceleration,
-        sliding_deceleration_approx_model,
-        sliding_deceleration_discrete_emperical,
-    )
-    from sliding_stopping_distance_rollout import (
-        _advance_body_velocity,
-        _is_stopped,
+        rollout_discrete_empirical_deceleration,
+        rollout_independent_axis_braking,
         rollout_sliding_deceleration,
+        rollout_sliding_deceleration_approx,
     )
-
-
-def _independent_axis_brake_profile(initial_speed, deceleration, dt):
-    """Ramp an initial axis speed to zero at a constant deceleration.
-
-    Ports fieldset_generator_barebones/generate_rollouts.py's ``brake_profile``,
-    omitting its response-time hold so braking starts immediately.
-    """
-    speed = abs(float(initial_speed))
-    if speed == 0.0:
-        return np.zeros(1, dtype=float)
-    deceleration = abs(float(deceleration))
-    if deceleration == 0.0:
-        raise ValueError("deceleration must be nonzero")
-    sign = np.sign(initial_speed)
-    profile = []
-    while speed >= deceleration * dt:
-        speed -= deceleration * dt
-        profile.append(sign * speed)
-    profile.append(0.0)
-    return np.asarray(profile, dtype=float)
-
-
-def rollout_independent_axis_braking(body_velocity, brake_deceleration, dt):
-    """Roll out pose and body velocity under independent per-axis braking.
-
-    Ports fieldset_generator_barebones/generate_rollouts.py's ``rollout``,
-    omitting its response-time hold so braking starts immediately.
-
-    Args:
-        body_velocity: Initial ``[vx, vy, yaw_rate]`` body velocity.
-        brake_deceleration: Per-axis deceleration magnitudes ``[dx, dy, dyaw]``.
-        dt: Integration step in seconds.
-    Returns:
-        ``(states, velocities)``. ``states`` are ``[x, y, theta]`` rows, and
-        ``velocities`` are ``[vx, vy, yaw_rate]`` rows aligned with ``states``.
-    """
-    profiles = [
-        _independent_axis_brake_profile(body_velocity[axis], brake_deceleration[axis], dt)
-        for axis in range(3)
-    ]
-    max_length = max(len(profile) for profile in profiles)
-    velocities = np.array(
-        [np.pad(profile, (0, max_length - len(profile))) for profile in profiles], dtype=float
-    ).T
-    states = np.zeros((max_length + 1, 3), dtype=float)
-    for index, (vx, vy, yaw_rate) in enumerate(velocities):
-        x, y, theta = states[index]
-        c = np.cos(theta)
-        s = np.sin(theta)
-        states[index + 1] = (x + (c * vx - s * vy) * dt, y + (s * vx + c * vy) * dt, theta + yaw_rate * dt)
-    return states, velocities
-
-
-def rollout_discrete_empirical_deceleration(
-    body_velocity,
-    cardinal_body_deceleration,
-    diagonal_body_deceleration,
-    diagonal_angle_half_width_degrees,
-    dt=0.005,
-    max_time=5.0,
-    speed_tolerance=1e-4,
-):
-    """Roll out pose and body velocity under the discrete empirical deceleration model.
-
-    Mirrors sliding_stopping_distance_rollout.rollout_sliding_deceleration's
-    integration loop, but calls ``sliding_deceleration_discrete_emperical``
-    instead of the roller friction-circle model. Yaw rate is held constant
-    because that model only specifies body-x/y deceleration.
-
-    Args:
-        body_velocity: Initial ``[vx, vy, yaw_rate]`` body velocity.
-        cardinal_body_deceleration: Positive deceleration outside diagonal bands [m/s^2].
-        diagonal_body_deceleration: Positive deceleration inside diagonal bands [m/s^2].
-        diagonal_angle_half_width_degrees: Half-width around each diagonal direction [deg].
-        dt: Integration step in seconds.
-        max_time: Maximum rollout duration in seconds.
-        speed_tolerance: Translational stopping threshold in m/s.
-    Returns:
-        ``(states, velocities, stop_time, stopped)``, matching
-        ``rollout_sliding_deceleration``'s return shape.
-    """
-    velocity = np.asarray(body_velocity, dtype=float)
-    if velocity.shape != (3,):
-        raise ValueError("body_velocity must have shape (3,)")
-    if dt <= 0.0:
-        raise ValueError("dt must be positive")
-    if max_time <= 0.0:
-        raise ValueError("max_time must be positive")
-    if speed_tolerance <= 0.0:
-        raise ValueError("speed_tolerance must be positive")
-
-    max_steps = int(np.ceil(max_time / dt))
-    states = [np.zeros(3, dtype=float)]
-    velocities = [velocity.copy()]
-    stopped = np.linalg.norm(velocity[:2]) <= speed_tolerance
-    stop_time = 0.0 if stopped else max_time
-
-    for step_idx in range(max_steps):
-        if stopped:
-            break
-
-        t = step_idx * dt
-        step = min(dt, max_time - t)
-        if step <= 0.0:
-            break
-
-        acceleration = sliding_deceleration_discrete_emperical(
-            velocity[:2],
-            cardinal_body_deceleration=cardinal_body_deceleration,
-            diagonal_body_deceleration=diagonal_body_deceleration,
-            diagonal_angle_half_width_degrees=diagonal_angle_half_width_degrees,
-        )
-        x, y, theta = states[-1]
-        c = np.cos(theta)
-        s = np.sin(theta)
-        states.append(
-            np.array(
-                [
-                    x + step * (c * velocity[0] - s * velocity[1]),
-                    y + step * (s * velocity[0] + c * velocity[1]),
-                    theta + step * velocity[2],
-                ],
-                dtype=float,
-            )
-        )
-
-        translation = velocity[:2] + step * acceleration[:2]
-        opposes_motion = velocity[:2] * acceleration[:2] < 0.0
-        crossed_zero = np.signbit(velocity[:2]) != np.signbit(translation)
-        translation[opposes_motion & crossed_zero] = 0.0
-        if np.linalg.norm(translation) <= speed_tolerance:
-            translation[:] = 0.0
-        velocity = np.array([translation[0], translation[1], velocity[2]], dtype=float)
-        velocities.append(velocity.copy())
-
-        stopped = np.linalg.norm(velocity[:2]) <= speed_tolerance
-        if stopped:
-            stop_time = t + step
-
-    return np.asarray(states), np.asarray(velocities), stop_time, stopped
-
-
-def rollout_sliding_deceleration_approx(
-    body_velocity,
-    wheel_braking_deceleration,
-    params=None,
-    dt=0.005,
-    max_time=5.0,
-    speed_tolerance=1e-4,
-    yaw_rate_tolerance=1e-4,
-):
-    """Roll out pose and body velocity under the continuous sliding-approx model.
-
-    Mirrors sliding_stopping_distance_rollout.rollout_sliding_deceleration's
-    integration loop, but calls ``sliding_deceleration_approx_model`` instead
-    of the Coulomb sign-switch model.
-
-    Args:
-        body_velocity: Initial ``[vx, vy, yaw_rate]`` body velocity.
-        wheel_braking_deceleration: Per-wheel roller-axis braking deceleration,
-            calibrated for the approx model (e.g. via
-            ``individual_wheel_braking_deceleration(..., model="approx")``).
-        params: Mecanum physical parameters, or ``None`` for defaults.
-        dt: Integration step in seconds.
-        max_time: Maximum rollout duration in seconds.
-        speed_tolerance: Translational stopping threshold in m/s.
-        yaw_rate_tolerance: Yaw-rate stopping threshold in rad/s.
-    Returns:
-        ``(states, velocities, stop_time, stopped)``, matching
-        ``rollout_sliding_deceleration``'s return shape.
-    """
-    if params is None:
-        params = MecanumPhysicsParams()
-    velocity = np.asarray(body_velocity, dtype=float)
-    if velocity.shape != (3,):
-        raise ValueError("body_velocity must have shape (3,)")
-    if dt <= 0.0:
-        raise ValueError("dt must be positive")
-    if max_time <= 0.0:
-        raise ValueError("max_time must be positive")
-    if speed_tolerance <= 0.0:
-        raise ValueError("speed_tolerance must be positive")
-    if yaw_rate_tolerance <= 0.0:
-        raise ValueError("yaw_rate_tolerance must be positive")
-
-    max_steps = int(np.ceil(max_time / dt))
-    states = [np.zeros(3, dtype=float)]
-    velocities = [velocity.copy()]
-    stopped = _is_stopped(velocity, speed_tolerance, yaw_rate_tolerance)
-    stop_time = 0.0 if stopped else max_time
-
-    for step_idx in range(max_steps):
-        if stopped:
-            break
-
-        t = step_idx * dt
-        step = min(dt, max_time - t)
-        if step <= 0.0:
-            break
-
-        acceleration = sliding_deceleration_approx_model(
-            velocity,
-            wheel_braking_deceleration=wheel_braking_deceleration,
-            params=params,
-        )
-        x, y, theta = states[-1]
-        c = np.cos(theta)
-        s = np.sin(theta)
-        states.append(
-            np.array(
-                [
-                    x + step * (c * velocity[0] - s * velocity[1]),
-                    y + step * (s * velocity[0] + c * velocity[1]),
-                    theta + step * velocity[2],
-                ],
-                dtype=float,
-            )
-        )
-
-        velocity = _advance_body_velocity(
-            velocity,
-            acceleration,
-            step,
-            speed_tolerance=speed_tolerance,
-            yaw_rate_tolerance=yaw_rate_tolerance,
-        )
-        velocities.append(velocity.copy())
-
-        stopped = _is_stopped(velocity, speed_tolerance, yaw_rate_tolerance)
-        if stopped:
-            stop_time = t + step
-
-    return np.asarray(states), np.asarray(velocities), stop_time, stopped
 
 
 def plot_velocity_profiles(axis, strategies, dt):
@@ -301,6 +61,40 @@ def plot_velocity_profiles(axis, strategies, dt):
     axis.set_ylabel("vx, vy [m/s]   \u03c9 [rad/s]")
     axis.grid(True, alpha=0.25)
     axis.legend(loc="best", fontsize="x-small", ncol=len(strategies))
+
+
+def plot_velocity_and_energy(axis, strategies, dt, params):
+    """Draw vx/vy/omega vs time, plus a twin-axis kinetic energy trace, for every strategy."""
+    axis.axhline(0.0, color="0.7", linewidth=0.8)
+    styles = (("vx", "-"), ("vy", "--"), ("\u03c9", ":"))
+    for label, color, _, velocities in strategies:
+        times = np.arange(len(velocities)) * dt
+        for axis_index, (name, style) in enumerate(styles):
+            axis.plot(
+                times,
+                velocities[:, axis_index],
+                color=color,
+                linestyle=style,
+                linewidth=1.4,
+                label=f"{label} {name}",
+            )
+    axis.set_title("body velocity and kinetic energy vs time", fontsize="medium")
+    axis.set_xlabel("time [s]")
+    axis.set_ylabel("vx, vy [m/s]   \u03c9 [rad/s]")
+    axis.grid(True, alpha=0.25)
+
+    energy_axis = axis.twinx()
+    for label, color, _, velocities in strategies:
+        times = np.arange(len(velocities)) * dt
+        # translational + rotational kinetic energy, using the same body model as the rollout
+        energy = 0.5 * params.body_mass * np.sum(velocities[:, :2] ** 2, axis=1) + 0.5 * params.body_yaw_inertia * velocities[:, 2] ** 2
+        energy_axis.plot(times, energy, color=color, linestyle="-.", linewidth=1.8, alpha=0.6, label=f"{label} energy")
+    energy_axis.set_ylabel("kinetic energy [J]")
+    energy_axis.set_ylim(bottom=0.0)
+
+    lines, labels = axis.get_legend_handles_labels()
+    energy_lines, energy_labels = energy_axis.get_legend_handles_labels()
+    axis.legend(lines + energy_lines, labels + energy_labels, loc="best", fontsize="x-small", ncol=len(strategies))
 
 
 def plot_rollout_paths(axis, strategies, footprint, max_footprints):
@@ -342,14 +136,15 @@ def main():
     parser.add_argument(
         "--strategies",
         nargs="+",
-        choices=["sliding-coulomb", "sliding-approx", "independent-axis", "discrete-empirical"],
+        choices=["sliding-coulomb", "sliding-approx", "independent-axis", "discrete-empirical", "all"],
         default=["sliding-coulomb", "independent-axis"],
         help=(
             "Braking strategies to roll out and display. 'sliding' is the roller "
             "friction-circle Coulomb model, 'sliding-approx' is its continuous "
             "alignment-weighted approximation, 'independent-axis' is the "
-            "box-bounded per-axis braking model, and 'discrete-empirical' is the "
-            "heading-dependent model. Default: sliding independent-axis."
+            "box-bounded per-axis braking model, 'discrete-empirical' is the "
+            "heading-dependent model, and 'all' selects every strategy. "
+            "Default: sliding independent-axis."
         ),
     )
     parser.add_argument("--vx", type=float, default=1.0, help="Initial body vx [m/s].")
@@ -399,6 +194,8 @@ def main():
     args = parser.parse_args()
 
     selected = set(args.strategies)
+    if "all" in selected:
+        selected = {"sliding-coulomb", "sliding-approx", "independent-axis", "discrete-empirical"}
     if args.max_body_x_deceleration <= 0.0:
         raise ValueError("max-body-x-deceleration must be positive")
     if args.brake_deceleration_x <= 0.0 or args.brake_deceleration_y <= 0.0 or args.brake_deceleration_yaw <= 0.0:
@@ -480,6 +277,14 @@ def main():
     plot_velocity_profiles(velocity_axis, strategies, args.dt)
     plot_rollout_paths(path_axis, strategies, model.footprint, args.max_footprints)
     figure.tight_layout()
+
+    energy_figure, energy_axis = plt.subplots(figsize=(8, 6))
+    energy_figure.suptitle(
+        f"Velocity and Energy: vx={args.vx:g} m/s, vy={args.vy:g} m/s, \u03c9={args.omega:g} rad/s"
+    )
+    plot_velocity_and_energy(energy_axis, strategies, args.dt, params)
+    energy_figure.tight_layout()
+
     plt.show()
 
 

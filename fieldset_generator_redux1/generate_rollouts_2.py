@@ -28,8 +28,8 @@ from experiments.kinematic_boundary_rollout_limited import (
     sample_boundary_velocities_face_bisection,
 )
 from experiments.mecanum_common import Mecanum
-from experiments.mecanum_physics import MecanumPhysicsParams, individual_wheel_braking_deceleration
-from experiments.sliding_stopping_distance_rollout import rollout_sliding_deceleration
+from experiments.mecanum_physics import MecanumPhysicsParams
+from experiments.mecanum_sliding import individual_wheel_braking_deceleration, rollout_sliding_deceleration
 
 
 DEFAULT_CONFIG = Path(__file__).with_name("fieldset_config.json")

@@ -8,19 +8,17 @@ from matplotlib.patches import Polygon
 
 try:
     from .mecanum_common import RobotFootprint
-    from .mecanum_physics import (
-        MecanumPhysicsParams,
+    from .mecanum_physics import MecanumPhysicsParams, inverse_kinematics
+    from .mecanum_sliding import (
         individual_wheel_braking_deceleration,
-        inverse_kinematics,
         sliding_deceleration_coulomb_model,
         sliding_deceleration_discrete_emperical,
     )
 except ImportError:
     from mecanum_common import RobotFootprint
-    from mecanum_physics import (
-        MecanumPhysicsParams,
+    from mecanum_physics import MecanumPhysicsParams, inverse_kinematics
+    from mecanum_sliding import (
         individual_wheel_braking_deceleration,
-        inverse_kinematics,
         sliding_deceleration_coulomb_model,
         sliding_deceleration_discrete_emperical,
     )

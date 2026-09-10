@@ -23,9 +23,10 @@ try:
         sample_boundary_velocities_face_bisection,
     )
     from .mecanum_common import Mecanum
-    from .mecanum_physics import (
-        MecanumPhysicsParams,
+    from .mecanum_physics import MecanumPhysicsParams
+    from .mecanum_sliding import (
         individual_wheel_braking_deceleration,
+        rollout_sliding_deceleration,
         sliding_deceleration_coulomb_model,
     )
     from .sliding_deceleration_xy import plot_sliding_deceleration_xy
@@ -39,122 +40,13 @@ except ImportError:
         sample_boundary_velocities_face_bisection,
     )
     from mecanum_common import Mecanum
-    from mecanum_physics import (
-        MecanumPhysicsParams,
+    from mecanum_physics import MecanumPhysicsParams
+    from mecanum_sliding import (
         individual_wheel_braking_deceleration,
+        rollout_sliding_deceleration,
         sliding_deceleration_coulomb_model,
     )
     from sliding_deceleration_xy import plot_sliding_deceleration_xy
-
-
-def _is_stopped(body_velocity, speed_tolerance, yaw_rate_tolerance):
-    """Return true when translational and yaw speeds are both negligible."""
-    velocity = np.asarray(body_velocity, dtype=float)
-    return np.linalg.norm(velocity[:2]) <= speed_tolerance and abs(velocity[2]) <= yaw_rate_tolerance
-
-
-def _advance_body_velocity(body_velocity, body_acceleration, dt, speed_tolerance, yaw_rate_tolerance):
-    """Advance body velocity and clamp small Coulomb-friction sign crossings."""
-    velocity = np.asarray(body_velocity, dtype=float)
-    acceleration = np.asarray(body_acceleration, dtype=float)
-    next_velocity = velocity + dt * acceleration
-
-    opposes_motion = velocity * acceleration < 0.0
-    crossed_zero = np.signbit(velocity) != np.signbit(next_velocity)
-    next_velocity[opposes_motion & crossed_zero] = 0.0
-
-    if np.linalg.norm(next_velocity[:2]) <= speed_tolerance:
-        next_velocity[:2] = 0.0
-    if abs(next_velocity[2]) <= yaw_rate_tolerance:
-        next_velocity[2] = 0.0
-    return next_velocity
-
-
-def rollout_sliding_deceleration(
-    body_velocity,
-    wheel_braking_deceleration,
-    params=None,
-    dt=0.005,
-    max_time=5.0,
-    speed_tolerance=1e-4,
-    yaw_rate_tolerance=1e-4,
-):
-    """Roll out pose and body velocity under the sliding deceleration model.
-
-    Args:
-        body_velocity: Initial ``[vx, vy, yaw_rate]`` body velocity.
-        wheel_braking_deceleration: Per-wheel roller-axis braking deceleration.
-        params: Mecanum physical parameters, or ``None`` for defaults.
-        dt: Integration step in seconds.
-        max_time: Maximum rollout duration in seconds.
-        speed_tolerance: Translational stopping threshold in m/s.
-        yaw_rate_tolerance: Yaw-rate stopping threshold in rad/s.
-    Returns:
-        ``(states, velocities, stop_time, stopped)``. ``states`` are
-        ``[x, y, theta]`` rows, and ``velocities`` are ``[vx, vy, yaw_rate]`` rows.
-    """
-    if params is None:
-        params = MecanumPhysicsParams()
-    velocity = np.asarray(body_velocity, dtype=float)
-    if velocity.shape != (3,):
-        raise ValueError("body_velocity must have shape (3,)")
-    if dt <= 0.0:
-        raise ValueError("dt must be positive")
-    if max_time <= 0.0:
-        raise ValueError("max_time must be positive")
-    if speed_tolerance <= 0.0:
-        raise ValueError("speed_tolerance must be positive")
-    if yaw_rate_tolerance <= 0.0:
-        raise ValueError("yaw_rate_tolerance must be positive")
-
-    max_steps = int(np.ceil(max_time / dt))
-    states = [np.zeros(3, dtype=float)]
-    velocities = [velocity.copy()]
-    stopped = _is_stopped(velocity, speed_tolerance, yaw_rate_tolerance)
-    stop_time = 0.0 if stopped else max_time
-
-    for step_idx in range(max_steps):
-        if stopped:
-            break
-
-        t = step_idx * dt
-        step = min(dt, max_time - t)
-        if step <= 0.0:
-            break
-
-        acceleration = sliding_deceleration_coulomb_model(
-            velocity,
-            wheel_braking_deceleration=wheel_braking_deceleration,
-            params=params,
-        )
-        x, y, theta = states[-1]
-        c = np.cos(theta)
-        s = np.sin(theta)
-        states.append(
-            np.array(
-                [
-                    x + step * (c * velocity[0] - s * velocity[1]),
-                    y + step * (s * velocity[0] + c * velocity[1]),
-                    theta + step * velocity[2],
-                ],
-                dtype=float,
-            )
-        )
-
-        velocity = _advance_body_velocity(
-            velocity,
-            acceleration,
-            step,
-            speed_tolerance=speed_tolerance,
-            yaw_rate_tolerance=yaw_rate_tolerance,
-        )
-        velocities.append(velocity.copy())
-
-        stopped = _is_stopped(velocity, speed_tolerance, yaw_rate_tolerance)
-        if stopped:
-            stop_time = t + step
-
-    return np.asarray(states), np.asarray(velocities), stop_time, stopped
 
 
 def plot_sliding_stopping_rollouts(
