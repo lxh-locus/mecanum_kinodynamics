@@ -15,6 +15,7 @@ from mecanum_physics import (
     inverse_kinematics,
     params_from_model,
     relax_wheel_velocity_to_constraint,
+    sliding_deceleration_approx_model,
     sliding_deceleration_coulomb_model,
     sliding_deceleration_discrete_emperical,
     wheel_constraint_violation,
@@ -119,12 +120,24 @@ def test_linear_inverse_dynamics_round_trip_to_body_acceleration():
 def test_individual_wheel_braking_deceleration_calibrates_body_x_limit():
     wheel_braking = individual_wheel_braking_deceleration(4.0)
 
+    np.testing.assert_allclose(wheel_braking, np.sqrt(2.0))
+
+
+def test_individual_wheel_braking_deceleration_calibrates_approx_model_body_x_limit():
+    wheel_braking = individual_wheel_braking_deceleration(4.0, model="approx")
+
     np.testing.assert_allclose(wheel_braking, 2.0)
+
+    actual = sliding_deceleration_approx_model([1.0, 0.0, 0.0], wheel_braking)
+    np.testing.assert_allclose(actual, [-4.0, 0.0, 0.0], atol=1e-12)
 
 
 def test_individual_wheel_braking_deceleration_rejects_invalid_inputs():
     with pytest.raises(ValueError, match="positive"):
         individual_wheel_braking_deceleration(0.0)
+
+    with pytest.raises(ValueError, match="model"):
+        individual_wheel_braking_deceleration(4.0, model="unknown")
 
     params = MecanumPhysicsParams(roller_directions=((0.0, 0.0),) * 4)
     with pytest.raises(ValueError, match="nonzero"):
