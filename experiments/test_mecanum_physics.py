@@ -119,7 +119,7 @@ def test_linear_inverse_dynamics_round_trip_to_body_acceleration():
 def test_individual_wheel_braking_deceleration_calibrates_body_x_limit():
     wheel_braking = individual_wheel_braking_deceleration(4.0)
 
-    np.testing.assert_allclose(wheel_braking, np.sqrt(2.0))
+    np.testing.assert_allclose(wheel_braking, 2.0)
 
 
 def test_individual_wheel_braking_deceleration_rejects_invalid_inputs():

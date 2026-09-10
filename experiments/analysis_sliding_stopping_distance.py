@@ -9,6 +9,7 @@ profile) and top-right (rollout detail) panels of inspect_rollout_archives.py.
 Strategies compared:
 - sliding roller friction (sliding_stopping_distance_rollout.rollout_sliding_deceleration)
 - independent axis braking (fieldset_generator_barebones/generate_rollouts.py's rollout)
+- discrete empirical heading-dependent braking (mecanum_physics.sliding_deceleration_discrete_emperical)
 """
 import argparse
 import sys
@@ -19,11 +20,19 @@ from matplotlib.patches import Polygon
 
 try:
     from .mecanum_common import Mecanum
-    from .mecanum_physics import MecanumPhysicsParams, individual_wheel_braking_deceleration
+    from .mecanum_physics import (
+        MecanumPhysicsParams,
+        individual_wheel_braking_deceleration,
+        sliding_deceleration_discrete_emperical,
+    )
     from .sliding_stopping_distance_rollout import rollout_sliding_deceleration
 except ImportError:
     from mecanum_common import Mecanum
-    from mecanum_physics import MecanumPhysicsParams, individual_wheel_braking_deceleration
+    from mecanum_physics import (
+        MecanumPhysicsParams,
+        individual_wheel_braking_deceleration,
+        sliding_deceleration_discrete_emperical,
+    )
     from sliding_stopping_distance_rollout import rollout_sliding_deceleration
 
 
@@ -77,6 +86,95 @@ def rollout_independent_axis_braking(body_velocity, brake_deceleration, dt):
         s = np.sin(theta)
         states[index + 1] = (x + (c * vx - s * vy) * dt, y + (s * vx + c * vy) * dt, theta + yaw_rate * dt)
     return states, velocities
+
+
+def rollout_discrete_empirical_deceleration(
+    body_velocity,
+    cardinal_body_deceleration,
+    diagonal_body_deceleration,
+    diagonal_angle_half_width_degrees,
+    dt=0.005,
+    max_time=5.0,
+    speed_tolerance=1e-4,
+):
+    """Roll out pose and body velocity under the discrete empirical deceleration model.
+
+    Mirrors sliding_stopping_distance_rollout.rollout_sliding_deceleration's
+    integration loop, but calls ``sliding_deceleration_discrete_emperical``
+    instead of the roller friction-circle model. Yaw rate is held constant
+    because that model only specifies body-x/y deceleration.
+
+    Args:
+        body_velocity: Initial ``[vx, vy, yaw_rate]`` body velocity.
+        cardinal_body_deceleration: Positive deceleration outside diagonal bands [m/s^2].
+        diagonal_body_deceleration: Positive deceleration inside diagonal bands [m/s^2].
+        diagonal_angle_half_width_degrees: Half-width around each diagonal direction [deg].
+        dt: Integration step in seconds.
+        max_time: Maximum rollout duration in seconds.
+        speed_tolerance: Translational stopping threshold in m/s.
+    Returns:
+        ``(states, velocities, stop_time, stopped)``, matching
+        ``rollout_sliding_deceleration``'s return shape.
+    """
+    velocity = np.asarray(body_velocity, dtype=float)
+    if velocity.shape != (3,):
+        raise ValueError("body_velocity must have shape (3,)")
+    if dt <= 0.0:
+        raise ValueError("dt must be positive")
+    if max_time <= 0.0:
+        raise ValueError("max_time must be positive")
+    if speed_tolerance <= 0.0:
+        raise ValueError("speed_tolerance must be positive")
+
+    max_steps = int(np.ceil(max_time / dt))
+    states = [np.zeros(3, dtype=float)]
+    velocities = [velocity.copy()]
+    stopped = np.linalg.norm(velocity[:2]) <= speed_tolerance
+    stop_time = 0.0 if stopped else max_time
+
+    for step_idx in range(max_steps):
+        if stopped:
+            break
+
+        t = step_idx * dt
+        step = min(dt, max_time - t)
+        if step <= 0.0:
+            break
+
+        acceleration = sliding_deceleration_discrete_emperical(
+            velocity[:2],
+            cardinal_body_deceleration=cardinal_body_deceleration,
+            diagonal_body_deceleration=diagonal_body_deceleration,
+            diagonal_angle_half_width_degrees=diagonal_angle_half_width_degrees,
+        )
+        x, y, theta = states[-1]
+        c = np.cos(theta)
+        s = np.sin(theta)
+        states.append(
+            np.array(
+                [
+                    x + step * (c * velocity[0] - s * velocity[1]),
+                    y + step * (s * velocity[0] + c * velocity[1]),
+                    theta + step * velocity[2],
+                ],
+                dtype=float,
+            )
+        )
+
+        translation = velocity[:2] + step * acceleration[:2]
+        opposes_motion = velocity[:2] * acceleration[:2] < 0.0
+        crossed_zero = np.signbit(velocity[:2]) != np.signbit(translation)
+        translation[opposes_motion & crossed_zero] = 0.0
+        if np.linalg.norm(translation) <= speed_tolerance:
+            translation[:] = 0.0
+        velocity = np.array([translation[0], translation[1], velocity[2]], dtype=float)
+        velocities.append(velocity.copy())
+
+        stopped = np.linalg.norm(velocity[:2]) <= speed_tolerance
+        if stopped:
+            stop_time = t + step
+
+    return np.asarray(states), np.asarray(velocities), stop_time, stopped
 
 
 def plot_velocity_profiles(axis, strategies, dt):
@@ -137,9 +235,21 @@ def main():
     parser = argparse.ArgumentParser(
         description="Roll out every braking strategy for one initial body velocity and compare them."
     )
+    parser.add_argument(
+        "--strategies",
+        nargs="+",
+        choices=["sliding", "independent-axis", "discrete-empirical"],
+        default=["sliding", "independent-axis"],
+        help=(
+            "Braking strategies to roll out and display. 'sliding' is the roller "
+            "friction-circle model, 'independent-axis' is the box-bounded per-axis "
+            "braking model, and 'discrete-empirical' is the heading-dependent model. "
+            "Default: sliding independent-axis."
+        ),
+    )
     parser.add_argument("--vx", type=float, default=1.0, help="Initial body vx [m/s].")
     parser.add_argument("--vy", type=float, default=0.5, help="Initial body vy [m/s].")
-    parser.add_argument("--omega", type=float, default=1.0, help="Initial body yaw rate [rad/s].")
+    parser.add_argument("--omega", type=float, default=0.8, help="Initial body yaw rate [rad/s].")
     parser.add_argument(
         "--max-body-x-deceleration",
         type=float,
@@ -158,6 +268,24 @@ def main():
         default=3.0,
         help="Independent-axis yaw-rate braking deceleration [rad/s^2].",
     )
+    parser.add_argument(
+        "--cardinal-body-deceleration",
+        type=float,
+        default=0.9,
+        help="Discrete-empirical deceleration outside diagonal bands [m/s^2].",
+    )
+    parser.add_argument(
+        "--diagonal-body-deceleration",
+        type=float,
+        default=0.7,
+        help="Discrete-empirical deceleration inside diagonal bands [m/s^2].",
+    )
+    parser.add_argument(
+        "--diagonal-angle-half-width-degrees",
+        type=float,
+        default=5.0,
+        help="Half-width around each 45-degree diagonal direction [deg].",
+    )
     parser.add_argument("--dt", type=float, default=0.005, help="Integration step [s].")
     parser.add_argument("--max-time", type=float, default=5.0, help="Maximum rollout time [s].")
     parser.add_argument(
@@ -165,10 +293,18 @@ def main():
     )
     args = parser.parse_args()
 
+    selected = set(args.strategies)
     if args.max_body_x_deceleration <= 0.0:
         raise ValueError("max-body-x-deceleration must be positive")
     if args.brake_deceleration_x <= 0.0 or args.brake_deceleration_y <= 0.0 or args.brake_deceleration_yaw <= 0.0:
         raise ValueError("brake-deceleration values must be positive")
+    if "discrete-empirical" in selected:
+        if args.cardinal_body_deceleration <= 0.0 or args.diagonal_body_deceleration <= 0.0:
+            raise ValueError("cardinal-body-deceleration and diagonal-body-deceleration must be positive")
+        if args.diagonal_body_deceleration > args.cardinal_body_deceleration:
+            raise ValueError("diagonal-body-deceleration must not exceed cardinal-body-deceleration")
+        if not (0.0 <= args.diagonal_angle_half_width_degrees <= 45.0):
+            raise ValueError("diagonal-angle-half-width-degrees must be in [0, 45]")
     if args.dt <= 0.0:
         raise ValueError("dt must be positive")
     if args.max_time <= 0.0:
@@ -180,27 +316,43 @@ def main():
     params = MecanumPhysicsParams()
     model = Mecanum(params=params)
 
-    wheel_braking_deceleration = individual_wheel_braking_deceleration(args.max_body_x_deceleration, params=params)
-    slide_states, slide_velocities, stop_time, stopped = rollout_sliding_deceleration(
-        initial_velocity,
-        wheel_braking_deceleration=wheel_braking_deceleration,
-        params=params,
-        dt=args.dt,
-        max_time=args.max_time,
-    )
-    print(f"sliding roller friction: stop_time={stop_time:.3f} s, stopped={stopped}")
+    strategies = []
+    if "sliding" in selected:
+        wheel_braking_deceleration = individual_wheel_braking_deceleration(
+            args.max_body_x_deceleration, params=params
+        )
+        slide_states, slide_velocities, stop_time, stopped = rollout_sliding_deceleration(
+            initial_velocity,
+            wheel_braking_deceleration=wheel_braking_deceleration,
+            params=params,
+            dt=args.dt,
+            max_time=args.max_time,
+        )
+        print(f"sliding roller friction: stop_time={stop_time:.3f} s, stopped={stopped}")
+        strategies.append(("sliding roller friction", "tab:red", slide_states, slide_velocities))
 
-    axis_states, axis_velocities = rollout_independent_axis_braking(
-        initial_velocity,
-        brake_deceleration=(args.brake_deceleration_x, args.brake_deceleration_y, args.brake_deceleration_yaw),
-        dt=args.dt,
-    )
-    print(f"independent axis braking: stop_time={len(axis_velocities) * args.dt:.3f} s")
+    if "independent-axis" in selected:
+        axis_states, axis_velocities = rollout_independent_axis_braking(
+            initial_velocity,
+            brake_deceleration=(args.brake_deceleration_x, args.brake_deceleration_y, args.brake_deceleration_yaw),
+            dt=args.dt,
+        )
+        print(f"independent axis braking: stop_time={len(axis_velocities) * args.dt:.3f} s")
+        strategies.append(("independent axis braking", "tab:blue", axis_states, axis_velocities))
 
-    strategies = [
-        ("sliding roller friction", "tab:red", slide_states, slide_velocities),
-        ("independent axis braking", "tab:blue", axis_states, axis_velocities),
-    ]
+    if "discrete-empirical" in selected:
+        empirical_states, empirical_velocities, empirical_stop_time, empirical_stopped = (
+            rollout_discrete_empirical_deceleration(
+                initial_velocity,
+                cardinal_body_deceleration=args.cardinal_body_deceleration,
+                diagonal_body_deceleration=args.diagonal_body_deceleration,
+                diagonal_angle_half_width_degrees=args.diagonal_angle_half_width_degrees,
+                dt=args.dt,
+                max_time=args.max_time,
+            )
+        )
+        print(f"discrete empirical: stop_time={empirical_stop_time:.3f} s, stopped={empirical_stopped}")
+        strategies.append(("discrete empirical", "tab:green", empirical_states, empirical_velocities))
 
     figure, (velocity_axis, path_axis) = plt.subplots(1, 2, figsize=(14, 6))
     figure.suptitle(
