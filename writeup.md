@@ -317,7 +317,355 @@ $$d_\text{ref}(v) = \frac{v^2}{2\,a_\text{max}}$$
 
 ---
 
-## 8. Relationship between the four scripts
+## 8. Coulomb sliding-decay rollout (`rollout_sliding_deceleration_coulomb`)
+
+This section follows `rollout_sliding_deceleration_coulomb` in execution order.
+The function advances a planar pose and body velocity in discrete time.  The
+velocity is expressed in the body frame, while the pose position is expressed
+in the world frame.  The Coulomb model supplies the body-frame acceleration at
+each step; the rollout then uses that acceleration for a forward-Euler velocity
+update.
+
+Let
+
+$$
+\mathbf{v}_k =
+\begin{pmatrix}v_{x,k}\\v_{y,k}\\\omega_k\end{pmatrix},
+\qquad
+\mathbf{q}_k =
+\begin{pmatrix}x_k\\y_k\\\theta_k\end{pmatrix},
+$$
+
+where $(v_{x,k},v_{y,k})$ is body-frame translational velocity, $\omega_k$ is
+body yaw rate, and $(x_k,y_k,\theta_k)$ is the world pose at sample $k$.
+
+### 8.1 Defaults and input validation
+
+```python
+if params is None:
+  params = MecanumPhysicsParams()
+if velocity.shape != (3,):
+  raise ValueError("body_velocity must have shape (3,)")
+```
+The optional parameter object is replaced by the default physical model.  The
+initial velocity is required to have exactly three components:
+
+$$
+\mathbf{v}_0 = [v_{x,0},v_{y,0},\omega_0]^\mathsf{T}
+\in \mathbb{R}^3.
+$$
+This is important because the rollout tracks both translation and rotation;
+the lower-level deceleration model accepts a two-component velocity too, but
+this rollout does not.
+The next checks require positive numerical integration and stopping parameters:
+
+```python
+if dt <= 0.0:
+  raise ValueError("dt must be positive")
+if max_time <= 0.0:
+  raise ValueError("max_time must be positive")
+if speed_tolerance <= 0.0:
+  raise ValueError("speed_tolerance must be positive")
+if yaw_rate_tolerance <= 0.0:
+  raise ValueError("yaw_rate_tolerance must be positive")
+```
+
+Thus $dt>0$ defines the integration resolution, $T_\text{max}>0$ bounds the
+simulation duration, and the two tolerances define what counts as rest:
+
+$$
+\|[v_x,v_y]\|_2 \le \varepsilon_v,
+\qquad
+|\omega| \le \varepsilon_\omega.
+$$
+
+### 8.2 Number of integration steps and initial state
+
+```python
+max_steps = int(np.ceil(max_time / dt))
+states = [np.zeros(3, dtype=float)]
+velocities = [velocity.copy()]
+stopped = _is_stopped(velocity, speed_tolerance, yaw_rate_tolerance)
+stop_time = 0.0 if stopped else max_time
+```
+
+The ceiling guarantees enough iterations to cover the requested time interval:
+
+$$
+N = \left\lceil\frac{T_\text{max}}{\Delta t}\right\rceil.
+$$
+
+The initial pose is the origin with zero heading,
+
+$$
+\mathbf{q}_0 = [0,0,0]^\mathsf{T},
+$$
+
+and the first stored velocity is $\mathbf{v}_0$.  The helper
+`_is_stopped` evaluates
+
+$$
+\operatorname{stopped}(\mathbf{v}_k) \iff
+\sqrt{v_{x,k}^2+v_{y,k}^2}\le\varepsilon_v
+\quad\land\quad
+|\omega_k|\le\varepsilon_\omega.
+$$
+
+If the initial velocity already satisfies this condition, the function returns
+immediately with `stop_time = 0`.  Otherwise, `max_time` is used as a sentinel
+until the loop finds an actual stopping step.
+
+### 8.3 Loop time and final partial step
+
+```python
+for step_idx in range(max_steps):
+  if stopped:
+    break
+
+  t = step_idx * dt
+  step = min(dt, max_time - t)
+  if step <= 0.0:
+    break
+```
+
+At loop index $k$, the nominal time is
+
+$$
+t_k=k\Delta t.
+$$
+
+Usually the step size is $h_k=\Delta t$, but the final step is shortened if
+$T_\text{max}$ is not an integer multiple of $\Delta t$:
+
+$$
+h_k = \min(\Delta t,T_\text{max}-t_k).
+$$
+
+The $h_k\le0$ guard prevents an extra update after the time horizon.
+
+### 8.4 Coulomb wheel deceleration
+
+```python
+acceleration = sliding_deceleration_coulomb_model(
+  velocity,
+  wheel_braking_deceleration=wheel_braking_deceleration,
+  params=params,
+)
+```
+
+The returned acceleration is
+
+$$
+\mathbf{a}_k =
+\begin{pmatrix}a_{x,k}\\a_{y,k}\\\alpha_k\end{pmatrix},
+$$
+
+computed from the four wheel roller directions.  For wheel $i$, let
+$\mathbf{r}_i\in\mathbb{R}^2$ be its unit roller direction and let
+$\mathbf{p}_i=(p_{x,i},p_{y,i})$ be its body-frame location.  The local contact
+velocity includes body translation and yaw:
+
+$$
+\mathbf{u}_{i,k}=\begin{pmatrix}
+v_{x,k}-\omega_k p_{y,i}\\
+v_{y,k}+\omega_k p_{x,i}
+\end{pmatrix}.
+$$
+
+When $\|\mathbf{u}_{i,k}\|_2$ is nonzero, its direction is
+
+$$
+\widehat{\mathbf{u}}_{i,k}
+=\frac{\mathbf{u}_{i,k}}{\|\mathbf{u}_{i,k}\|_2}.
+$$
+
+The velocity component resisted by the roller is the scalar projection
+
+$$
+s_{i,k}=\mathbf{r}_i^\mathsf{T}\widehat{\mathbf{u}}_{i,k}.
+$$
+
+The Coulomb rule applies a fixed-magnitude axis acceleration whenever this
+projection is nonzero:
+
+$$
+b_{i,k}=-b_w\,\operatorname{sgn}(s_{i,k}),
+$$
+
+where $b_w$ is `wheel_braking_deceleration`.  If $s_{i,k}=0$ within the
+tolerance, the wheel contributes no axis braking.  Its planar acceleration
+contribution is therefore
+
+$$
+\mathbf{a}_{i,k}^{xy}=b_{i,k}\mathbf{r}_i.
+$$
+
+Summing the wheel contributions gives translation acceleration, while their
+moments about the center of mass give yaw acceleration:
+
+$$
+\mathbf{a}^{xy}_k=\sum_{i=1}^{4}\mathbf{a}_{i,k}^{xy},
+$$
+
+$$
+\alpha_k=\frac{m_s}{J_C}\sum_{i=1}^{4}
+\left(p_{x,i}a_{y,i,k}-p_{y,i}a_{x,i,k}\right).
+$$
+
+The hard sign function is why this model is piecewise constant in roller-force
+direction and can change abruptly when a wheel projection crosses zero.
+
+### 8.5 Body-frame velocity to world-frame pose update
+
+```python
+x, y, theta = states[-1]
+c = np.cos(theta)
+s = np.sin(theta)
+states.append(
+  np.array(
+    [
+      x + step * (c * velocity[0] - s * velocity[1]),
+      y + step * (s * velocity[0] + c * velocity[1]),
+      theta + step * velocity[2],
+    ],
+    dtype=float,
+  )
+)
+```
+
+The body-frame translation is rotated into world coordinates using
+
+$$
+R(\theta_k)=\begin{pmatrix}
+\cos\theta_k&-\sin\theta_k\\
+\sin\theta_k&\cos\theta_k
+\end{pmatrix}.
+$$
+
+The continuous pose kinematics are
+
+$$
+\dot{\mathbf{p}}_k=R(\theta_k)
+\begin{pmatrix}v_{x,k}\\v_{y,k}\end{pmatrix},
+\qquad
+\dot\theta_k=\omega_k,
+$$
+
+so the code applies forward Euler over $h_k$:
+
+$$
+\begin{aligned}
+x_{k+1}&=x_k+h_k(\cos\theta_k\,v_{x,k}-\sin\theta_k\,v_{y,k}),\\
+y_{k+1}&=y_k+h_k(\sin\theta_k\,v_{x,k}+\cos\theta_k\,v_{y,k}),\\
+  \theta_{k+1}&=\theta_k+h_k\omega_k.
+\end{aligned}
+$$
+
+Notice that pose is advanced using the velocity at the beginning of the step.
+
+### 8.6 Velocity update and sign-crossing clamp
+
+```python
+velocity = _advance_body_velocity(
+  velocity,
+  acceleration,
+  step,
+  speed_tolerance=speed_tolerance,
+  yaw_rate_tolerance=yaw_rate_tolerance,
+)
+velocities.append(velocity.copy())
+```
+
+Before the helper's stopping clamps, the forward-Euler velocity update is
+
+$$
+\widetilde{\mathbf{v}}_{k+1}=\mathbf{v}_k+h_k\mathbf{a}_k.
+$$
+
+Because Coulomb braking can overshoot zero in one finite step, the helper
+detects each component that is being opposed and changes sign:
+
+$$
+v_{j,k}a_{j,k}<0
+\quad\land\quad
+\operatorname{signbit}(v_{j,k})\ne
+\operatorname{signbit}(\widetilde v_{j,k+1}).
+$$
+
+For such a component $j$, the code sets
+
+$$
+v_{j,k+1}=0.
+$$
+
+This is a discrete approximation to the first zero crossing, and prevents a
+braking force from numerically carrying a component through rest and making it
+reverse direction.
+
+### 8.7 Translational and yaw stopping projection
+
+The helper then applies two independent tolerance projections:
+
+$$
+\sqrt{v_{x,k+1}^2+v_{y,k+1}^2}\le\varepsilon_v
+\quad\Longrightarrow\quad
+v_{x,k+1}=v_{y,k+1}=0,
+$$
+
+and
+
+$$
+|\omega_{k+1}|\le\varepsilon_\omega
+\quad\Longrightarrow\quad
+\omega_{k+1}=0.
+$$
+
+The translational test is vector-based rather than component-based: two small
+components are removed together when their Euclidean speed is small enough.
+The updated velocity is stored so that `states[k]` and `velocities[k]` remain
+aligned by sample index.
+
+### 8.8 Stop detection and return values
+
+```python
+stopped = _is_stopped(velocity, speed_tolerance, yaw_rate_tolerance)
+if stopped:
+  stop_time = t + step
+
+return np.asarray(states), np.asarray(velocities), stop_time, stopped
+```
+
+After each update, the same rest condition is re-evaluated.  If it succeeds,
+the stopping time is the end of the current integration step:
+
+$$
+t_\text{stop}=t_k+h_k.
+$$
+
+The returned arrays have the shapes
+
+$$
+\mathrm{states}\in\mathbb{R}^{n\times3},
+\qquad
+\mathrm{velocities}\in\mathbb{R}^{n\times3},
+$$
+
+with rows
+
+$$
+\mathrm{states}[k]=[x_k,y_k,\theta_k],
+\qquad
+\mathrm{velocities}[k]=[v_{x,k},v_{y,k},\omega_k].
+$$
+
+If the platform stops before $T_\text{max}$, the arrays end at the first
+sample satisfying both tolerance tests.  If it does not stop within the time
+horizon, `stopped` remains false and `stop_time` retains the sentinel value
+$T_\text{max}$.
+
+---
+
+## 9. Relationship between the four scripts
 
 ```
 mecanum_common.py
