@@ -7,12 +7,13 @@ swept-footprint path on the right. This mirrors the bottom-left (velocity
 profile) and top-right (rollout detail) panels of inspect_rollout_archives.py.
 
 Strategies compared:
-- sliding roller friction, coulomb model (mecanum_sliding.rollout_sliding_deceleration_coulomb_fixed_axis)
+- sliding roller friction, coulomb model (mecanum_sliding.rollout_sliding_deceleration)
 - sliding roller friction, velocity-axis Coulomb model (mecanum_sliding.sliding_deceleration_coulomb_velocity_axis)
-- sliding roller friction, continuous approximation (mecanum_sliding.rollout_sliding_deceleration_approx)
+- sliding roller friction, continuous approximation (mecanum_sliding.rollout_sliding_deceleration with a different deceleration function)
 - independent axis braking (mecanum_sliding.rollout_independent_axis_braking)
 - discrete empirical heading-dependent braking (mecanum_sliding.rollout_discrete_empirical_deceleration)
 """
+
 import argparse
 import sys
 
@@ -27,8 +28,8 @@ try:
         individual_wheel_braking_deceleration,
         rollout_discrete_empirical_deceleration,
         rollout_independent_axis_braking,
-        rollout_sliding_deceleration_coulomb,
-        rollout_sliding_deceleration_approx,
+        rollout_sliding_deceleration,
+        sliding_deceleration_approx_model,
         sliding_deceleration_coulomb_velocity_axis,
     )
 except ImportError:
@@ -38,8 +39,8 @@ except ImportError:
         individual_wheel_braking_deceleration,
         rollout_discrete_empirical_deceleration,
         rollout_independent_axis_braking,
-        rollout_sliding_deceleration_coulomb,
-        rollout_sliding_deceleration_approx,
+        rollout_sliding_deceleration,
+        sliding_deceleration_approx_model,
         sliding_deceleration_coulomb_velocity_axis,
     )
 
@@ -63,7 +64,7 @@ def plot_velocity_profiles(axis, strategies, dt):
     axis.set_xlabel("time [s]")
     axis.set_ylabel("vx, vy [m/s]   \u03c9 [rad/s]")
     axis.grid(True, alpha=0.25)
-    axis.legend(loc="best", fontsize="x-small", ncol=len(strategies))
+    return axis.get_legend_handles_labels()
 
 
 def plot_velocity_and_energy(axis, strategies, dt, params):
@@ -99,13 +100,7 @@ def plot_velocity_and_energy(axis, strategies, dt, params):
 
     lines, labels = axis.get_legend_handles_labels()
     power_lines, power_labels = power_axis.get_legend_handles_labels()
-    axis.legend(
-        lines + power_lines,
-        labels + power_labels,
-        loc="best",
-        fontsize="x-small",
-        ncol=len(strategies),
-    )
+    return lines + power_lines, labels + power_labels
 
 
 def plot_rollout_paths(axis, strategies, footprint, max_footprints):
@@ -136,7 +131,7 @@ def plot_rollout_paths(axis, strategies, footprint, max_footprints):
     axis.set_ylabel("world y [m]")
     axis.set_aspect("equal", adjustable="datalim")
     axis.grid(True, alpha=0.25)
-    axis.legend(loc="best", fontsize="small")
+    return axis.get_legend_handles_labels()
 
 
 def main():
@@ -243,7 +238,7 @@ def main():
         wheel_braking_deceleration = individual_wheel_braking_deceleration(
             args.max_body_x_deceleration, params=params
         )
-        slide_states, slide_velocities, stop_time, stopped = rollout_sliding_deceleration_coulomb(
+        slide_states, slide_velocities, stop_time, stopped = rollout_sliding_deceleration(
             initial_velocity,
             wheel_braking_deceleration=wheel_braking_deceleration,
             params=params,
@@ -258,7 +253,7 @@ def main():
             args.max_body_x_deceleration, params=params
         )
         velocity_axis_states, velocity_axis_velocities, velocity_axis_stop_time, velocity_axis_stopped = (
-            rollout_sliding_deceleration_coulomb(
+            rollout_sliding_deceleration(
                 initial_velocity,
                 wheel_braking_deceleration=wheel_braking_deceleration,
                 params=params,
@@ -284,12 +279,13 @@ def main():
         approx_wheel_braking_deceleration = individual_wheel_braking_deceleration(
             args.max_body_x_deceleration, params=params, model="approx"
         )
-        approx_states, approx_velocities, approx_stop_time, approx_stopped = rollout_sliding_deceleration_approx(
+        approx_states, approx_velocities, approx_stop_time, approx_stopped = rollout_sliding_deceleration(
             initial_velocity,
             wheel_braking_deceleration=approx_wheel_braking_deceleration,
             params=params,
             dt=args.dt,
             max_time=args.max_time,
+            deceleration_fn=sliding_deceleration_approx_model,
         )
         print(f"sliding roller friction (approx): stop_time={approx_stop_time:.3f} s, stopped={approx_stopped}")
         strategies.append(("sliding roller friction (approx)", "tab:purple", approx_states, approx_velocities))
@@ -312,16 +308,43 @@ def main():
     figure.suptitle(
         f"Braking Strategy Comparison: vx={args.vx:g} m/s, vy={args.vy:g} m/s, \u03c9={args.omega:g} rad/s"
     )
-    plot_velocity_profiles(velocity_axis, strategies, args.dt)
-    plot_rollout_paths(path_axis, strategies, model.footprint, args.max_footprints)
-    figure.tight_layout()
+    velocity_handles, velocity_labels = plot_velocity_profiles(velocity_axis, strategies, args.dt)
+    path_handles, path_labels = plot_rollout_paths(path_axis, strategies, model.footprint, args.max_footprints)
+    figure.legend(
+        velocity_handles,
+        velocity_labels,
+        loc="lower center",
+        bbox_to_anchor=(0.25, 0.01),
+        fontsize="x-small",
+        ncol=3,
+        frameon=False,
+    )
+    figure.legend(
+        path_handles,
+        path_labels,
+        loc="lower center",
+        bbox_to_anchor=(0.75, 0.01),
+        fontsize="small",
+        ncol=3,
+        frameon=False,
+    )
+    figure.tight_layout(rect=(0.0, 0.16, 1.0, 0.93))
 
     energy_figure, energy_axis = plt.subplots(figsize=(8, 6))
     energy_figure.suptitle(
         f"Velocity and Energy: vx={args.vx:g} m/s, vy={args.vy:g} m/s, \u03c9={args.omega:g} rad/s"
     )
-    plot_velocity_and_energy(energy_axis, strategies, args.dt, params)
-    energy_figure.tight_layout()
+    energy_handles, energy_labels = plot_velocity_and_energy(energy_axis, strategies, args.dt, params)
+    energy_figure.legend(
+        energy_handles,
+        energy_labels,
+        loc="lower center",
+        bbox_to_anchor=(0.5, 0.01),
+        fontsize="x-small",
+        ncol=3,
+        frameon=False,
+    )
+    energy_figure.tight_layout(rect=(0.0, 0.28, 1.0, 0.93))
 
     plt.show()
 

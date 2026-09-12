@@ -8,6 +8,7 @@ from mecanum_sliding import (
     sliding_deceleration_coulomb_fixed_axis,
     sliding_deceleration_coulomb_velocity_axis,
     sliding_deceleration_discrete_emperical,
+    rollout_discrete_empirical_deceleration,
 )
 
 
@@ -135,6 +136,22 @@ def test_sliding_deceleration_discrete_emperical_returns_zero_for_zero_translati
     actual = sliding_deceleration_discrete_emperical([0.0, 0.0, 1.0], 4.0, 2.0, 5.0)
 
     np.testing.assert_allclose(actual, np.zeros(3))
+
+
+def test_rollout_discrete_empirical_uses_shared_yaw_aware_rollout():
+    _, velocities, stop_time, stopped = rollout_discrete_empirical_deceleration(
+        [1.0, 0.0, 1.0],
+        cardinal_body_deceleration=4.0,
+        diagonal_body_deceleration=2.0,
+        diagonal_angle_half_width_degrees=5.0,
+        dt=0.001,
+        max_time=1.0,
+    )
+
+    assert stopped
+    assert stop_time > 0.0
+    assert velocities[-1, 0] == pytest.approx(0.0)
+    assert velocities[-1, 2] == pytest.approx(0.0)
 
 
 def test_sliding_deceleration_discrete_emperical_rejects_invalid_inputs():

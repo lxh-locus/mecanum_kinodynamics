@@ -61,6 +61,69 @@ def individual_wheel_braking_deceleration(
     return max_body_x_deceleration / body_x_gain
 
 
+def _sliding_contact_data(body_velocity, params, tolerance):
+    """Build normalized roller and contact-velocity data for sliding models."""
+    velocity = np.asarray(body_velocity, dtype=float)
+    if velocity.shape not in ((2,), (3,)):
+        raise ValueError("body_velocity must have shape (2,) or (3,)")
+    if tolerance <= 0.0:
+        raise ValueError("tolerance must be positive")
+
+    translation = velocity[:2]
+    yaw_rate = velocity[2] if velocity.shape == (3,) else 0.0
+    speed = np.linalg.norm(translation)
+    if speed <= tolerance and abs(yaw_rate) <= tolerance:
+        return None
+
+    wheel_positions = np.array(
+        [
+            [params.wb_hlength, params.wb_hwidth],
+            [params.wb_hlength, -params.wb_hwidth],
+            [-params.wb_hlength, params.wb_hwidth],
+            [-params.wb_hlength, -params.wb_hwidth],
+        ],
+        dtype=float,
+    )
+    roller_directions = np.asarray(params.roller_directions, dtype=float)
+    if roller_directions.shape != (4, 2):
+        raise ValueError("params.roller_directions must have shape (4, 2)")
+    roller_norms = np.linalg.norm(roller_directions, axis=1)
+    if np.any(roller_norms <= 0.0):
+        raise ValueError("params.roller_directions must contain nonzero vectors")
+    roller_directions /= roller_norms[:, np.newaxis]
+
+    contact_velocities = np.column_stack(
+        [
+            translation[0] - yaw_rate * wheel_positions[:, 1],
+            translation[1] + yaw_rate * wheel_positions[:, 0],
+        ]
+    )
+    contact_speeds = np.linalg.norm(contact_velocities, axis=1)
+    contact_directions = np.zeros_like(contact_velocities)
+    nonzero_contacts = contact_speeds > tolerance
+    contact_directions[nonzero_contacts] = (
+        contact_velocities[nonzero_contacts]
+        / contact_speeds[nonzero_contacts, np.newaxis]
+    )
+    rolling_projection = np.sum(roller_directions * contact_directions, axis=1)
+    rolling_projection = np.clip(rolling_projection, -1.0, 1.0)
+    return wheel_positions, roller_directions, contact_directions, rolling_projection
+
+
+def _body_acceleration_from_contacts(contact_accelerations, wheel_positions, params):
+    """Sum wheel contact accelerations and convert their moment to yaw acceleration."""
+    acceleration = np.sum(contact_accelerations, axis=0)
+    yaw_acceleration = (
+        params.body_mass
+        * np.sum(
+            wheel_positions[:, 0] * contact_accelerations[:, 1]
+            - wheel_positions[:, 1] * contact_accelerations[:, 0]
+        )
+        / params.body_yaw_inertia
+    )
+    return np.array([acceleration[0], acceleration[1], yaw_acceleration], dtype=float)
+
+
 def sliding_deceleration_approx_model(
     body_velocity,
     wheel_braking_deceleration,
@@ -105,50 +168,12 @@ def sliding_deceleration_approx_model(
         ValueError: If the velocity has an unsupported shape or a scalar
             parameter is not positive.
     """
-    velocity = np.asarray(body_velocity, dtype=float)
-    if velocity.shape not in ((2,), (3,)):
-        raise ValueError("body_velocity must have shape (2,) or (3,)")
     if wheel_braking_deceleration <= 0.0:
         raise ValueError("wheel_braking_deceleration must be positive")
-    if tolerance <= 0.0:
-        raise ValueError("tolerance must be positive")
-
-    translation = velocity[:2]
-    yaw_rate = velocity[2] if velocity.shape == (3,) else 0.0
-    speed = np.linalg.norm(translation)
-    if speed <= tolerance and abs(yaw_rate) <= tolerance:
+    contact_data = _sliding_contact_data(body_velocity, params, tolerance)
+    if contact_data is None:
         return np.zeros(3, dtype=float)
-
-    wheel_positions = np.array(
-        [
-            [params.wb_hlength, params.wb_hwidth],
-            [params.wb_hlength, -params.wb_hwidth],
-            [-params.wb_hlength, params.wb_hwidth],
-            [-params.wb_hlength, -params.wb_hwidth],
-        ],
-        dtype=float,
-    )
-    roller_directions = np.asarray(params.roller_directions, dtype=float)
-    if roller_directions.shape != (4, 2):
-        raise ValueError("params.roller_directions must have shape (4, 2)")
-    roller_norms = np.linalg.norm(roller_directions, axis=1)
-    if np.any(roller_norms <= 0.0):
-        raise ValueError("params.roller_directions must contain nonzero vectors")
-    roller_directions /= roller_norms[:, np.newaxis]
-    contact_velocities = np.column_stack(
-        [
-            translation[0] - yaw_rate * wheel_positions[:, 1],
-            translation[1] + yaw_rate * wheel_positions[:, 0],
-        ]
-    )
-    contact_speeds = np.linalg.norm(contact_velocities, axis=1)
-    contact_directions = np.zeros_like(contact_velocities)
-    nonzero_contacts = contact_speeds > tolerance
-    contact_directions[nonzero_contacts] = (
-        contact_velocities[nonzero_contacts] / contact_speeds[nonzero_contacts, np.newaxis]
-    )
-    rolling_projection = np.sum(roller_directions * contact_directions, axis=1)
-    rolling_projection = np.clip(rolling_projection, -1.0, 1.0)
+    wheel_positions, roller_directions, contact_directions, rolling_projection = contact_data
 
     # Continuous alignment weighting (rather than a hard Coulomb sign switch)
     # blends braking smoothly across body x/y as heading rotates; a wheel
@@ -156,16 +181,7 @@ def sliding_deceleration_approx_model(
     # contributes zero, since its projection is already zero.
     axis_acceleration = -wheel_braking_deceleration * rolling_projection
     contact_accelerations = axis_acceleration[:, np.newaxis] * roller_directions
-    acceleration = np.sum(contact_accelerations, axis=0)
-    yaw_acceleration = (
-        params.body_mass
-        * np.sum(
-            wheel_positions[:, 0] * contact_accelerations[:, 1]
-            - wheel_positions[:, 1] * contact_accelerations[:, 0]
-        )
-        / params.body_yaw_inertia
-    )
-    return np.array([acceleration[0], acceleration[1], yaw_acceleration], dtype=float)
+    return _body_acceleration_from_contacts(contact_accelerations, wheel_positions, params)
 
 
 def sliding_deceleration_coulomb_fixed_axis(
@@ -216,66 +232,19 @@ def sliding_deceleration_coulomb_fixed_axis(
         ValueError: If the velocity has an unsupported shape or a scalar
             parameter is not positive.
     """
-    velocity = np.asarray(body_velocity, dtype=float)
-    if velocity.shape not in ((2,), (3,)):
-        raise ValueError("body_velocity must have shape (2,) or (3,)")
     if wheel_braking_deceleration <= 0.0:
         raise ValueError("wheel_braking_deceleration must be positive")
-    if tolerance <= 0.0:
-        raise ValueError("tolerance must be positive")
-
-    translation = velocity[:2]
-    yaw_rate = velocity[2] if velocity.shape == (3,) else 0.0
-    speed = np.linalg.norm(translation)
-    if speed <= tolerance and abs(yaw_rate) <= tolerance:
+    contact_data = _sliding_contact_data(body_velocity, params, tolerance)
+    if contact_data is None:
         return np.zeros(3, dtype=float)
-
-    wheel_positions = np.array(
-        [
-            [params.wb_hlength, params.wb_hwidth],
-            [params.wb_hlength, -params.wb_hwidth],
-            [-params.wb_hlength, params.wb_hwidth],
-            [-params.wb_hlength, -params.wb_hwidth],
-        ],
-        dtype=float,
-    )
-    roller_directions = np.asarray(params.roller_directions, dtype=float)
-    if roller_directions.shape != (4, 2):
-        raise ValueError("params.roller_directions must have shape (4, 2)")
-    roller_norms = np.linalg.norm(roller_directions, axis=1)
-    if np.any(roller_norms <= 0.0):
-        raise ValueError("params.roller_directions must contain nonzero vectors")
-    roller_directions /= roller_norms[:, np.newaxis]
-    contact_velocities = np.column_stack(
-        [
-            translation[0] - yaw_rate * wheel_positions[:, 1],
-            translation[1] + yaw_rate * wheel_positions[:, 0],
-        ]
-    )
-    contact_speeds = np.linalg.norm(contact_velocities, axis=1)
-    contact_directions = np.zeros_like(contact_velocities)
-    nonzero_contacts = contact_speeds > tolerance
-    contact_directions[nonzero_contacts] = (
-        contact_velocities[nonzero_contacts] / contact_speeds[nonzero_contacts, np.newaxis]
-    )
-    rolling_projection = np.sum(roller_directions * contact_directions, axis=1)
-    rolling_projection = np.clip(rolling_projection, -1.0, 1.0)
+    wheel_positions, roller_directions, _, rolling_projection = contact_data
 
     # A slipping roller supplies its full Coulomb braking value along its axis.
     # A zero projection means it is fully rolling, so it supplies no braking.
     axis_acceleration = -wheel_braking_deceleration * np.sign(rolling_projection)
     axis_acceleration[np.isclose(rolling_projection, 0.0, atol=tolerance)] = 0.0
     contact_accelerations = axis_acceleration[:, np.newaxis] * roller_directions
-    acceleration = np.sum(contact_accelerations, axis=0)
-    yaw_acceleration = (
-        params.body_mass
-        * np.sum(
-            wheel_positions[:, 0] * contact_accelerations[:, 1]
-            - wheel_positions[:, 1] * contact_accelerations[:, 0]
-        )
-        / params.body_yaw_inertia
-    )
-    return np.array([acceleration[0], acceleration[1], yaw_acceleration], dtype=float)
+    return _body_acceleration_from_contacts(contact_accelerations, wheel_positions, params)
 
 
 def sliding_deceleration_coulomb_velocity_axis(
@@ -327,66 +296,18 @@ def sliding_deceleration_coulomb_velocity_axis(
         ValueError: If the velocity has an unsupported shape or a scalar
             parameter is not positive.
     """
-    velocity = np.asarray(body_velocity, dtype=float)
-    if velocity.shape not in ((2,), (3,)):
-        raise ValueError("body_velocity must have shape (2,) or (3,)")
     if wheel_braking_deceleration <= 0.0:
         raise ValueError("wheel_braking_deceleration must be positive")
-    if tolerance <= 0.0:
-        raise ValueError("tolerance must be positive")
-
-    translation = velocity[:2]
-    yaw_rate = velocity[2] if velocity.shape == (3,) else 0.0
-    speed = np.linalg.norm(translation)
-    if speed <= tolerance and abs(yaw_rate) <= tolerance:
+    contact_data = _sliding_contact_data(body_velocity, params, tolerance)
+    if contact_data is None:
         return np.zeros(3, dtype=float)
-
-    wheel_positions = np.array(
-        [
-            [params.wb_hlength, params.wb_hwidth],
-            [params.wb_hlength, -params.wb_hwidth],
-            [-params.wb_hlength, params.wb_hwidth],
-            [-params.wb_hlength, -params.wb_hwidth],
-        ],
-        dtype=float,
-    )
-    roller_directions = np.asarray(params.roller_directions, dtype=float)
-    if roller_directions.shape != (4, 2):
-        raise ValueError("params.roller_directions must have shape (4, 2)")
-    roller_norms = np.linalg.norm(roller_directions, axis=1)
-    if np.any(roller_norms <= 0.0):
-        raise ValueError("params.roller_directions must contain nonzero vectors")
-    roller_directions /= roller_norms[:, np.newaxis]
-    contact_velocities = np.column_stack(
-        [
-            translation[0] - yaw_rate * wheel_positions[:, 1],
-            translation[1] + yaw_rate * wheel_positions[:, 0],
-        ]
-    )
-    contact_speeds = np.linalg.norm(contact_velocities, axis=1)
-    contact_directions = np.zeros_like(contact_velocities)
-    nonzero_contacts = contact_speeds > tolerance
-    contact_directions[nonzero_contacts] = (
-        contact_velocities[nonzero_contacts] / contact_speeds[nonzero_contacts, np.newaxis]
-    )
-    rolling_projection = np.sum(roller_directions * contact_directions, axis=1)
-    rolling_projection = np.clip(rolling_projection, -1.0, 1.0)
+    wheel_positions, _, contact_directions, rolling_projection = contact_data
 
     # A slipping roller supplies its full Coulomb braking value opposite it's motion
     # A zero projection means it is fully rolling, so it supplies no braking.
-    axis_acceleration = -wheel_braking_deceleration * contact_directions
-    axis_acceleration[np.isclose(rolling_projection, 0.0, atol=tolerance)] = 0.0
-    contact_accelerations = axis_acceleration
-    acceleration = np.sum(contact_accelerations, axis=0)
-    yaw_acceleration = (
-        params.body_mass
-        * np.sum(
-            wheel_positions[:, 0] * contact_accelerations[:, 1]
-            - wheel_positions[:, 1] * contact_accelerations[:, 0]
-        )
-        / params.body_yaw_inertia
-    )
-    return np.array([acceleration[0], acceleration[1], yaw_acceleration], dtype=float)
+    contact_accelerations = -wheel_braking_deceleration * contact_directions
+    contact_accelerations[np.isclose(rolling_projection, 0.0, atol=tolerance)] = 0.0
+    return _body_acceleration_from_contacts(contact_accelerations, wheel_positions, params)
 
 
 def sliding_deceleration_discrete_emperical(
@@ -394,6 +315,7 @@ def sliding_deceleration_discrete_emperical(
     cardinal_body_deceleration,
     diagonal_body_deceleration,
     diagonal_angle_half_width_degrees,
+    params: MecanumPhysicsParams = MecanumPhysicsParams(),
     tolerance=1e-9,
 ):
     """Generate empirical stepwise sliding deceleration by velocity heading.
@@ -439,11 +361,17 @@ def sliding_deceleration_discrete_emperical(
     if tolerance <= 0.0:
         raise ValueError("tolerance must be positive")
 
+    contact_data = _sliding_contact_data(body_velocity, params, tolerance)
+    if contact_data is None:
+        return np.zeros(3, dtype=float)
+    wheel_positions, _, contact_directions, rolling_projection = contact_data
+
+    
+
     translation = velocity[:2]
     speed = np.linalg.norm(translation)
     if speed <= tolerance:
         return np.zeros(3, dtype=float)
-
     heading_degrees = np.degrees(np.arctan2(translation[1], translation[0])) % 90.0
     distance_from_diagonal = abs(heading_degrees - 45.0)
     if distance_from_diagonal <= diagonal_angle_half_width_degrees:
@@ -451,8 +379,17 @@ def sliding_deceleration_discrete_emperical(
     else:
         deceleration = cardinal_body_deceleration
 
-    acceleration_xy = -deceleration * translation / speed
-    return np.array([acceleration_xy[0], acceleration_xy[1], 0.0], dtype=float)
+    # acceleration_xy = -deceleration * translation / speed
+
+    # A slipping roller supplies its full Coulomb braking value opposite it's motion
+    # A zero projection means it is fully rolling, so it supplies no braking.
+    active_wheels = np.count_nonzero(~np.isclose(rolling_projection, 0.0, atol=tolerance))
+    wheel_deceleration = deceleration / active_wheels
+    contact_accelerations = -wheel_deceleration * contact_directions
+    contact_accelerations[np.isclose(rolling_projection, 0.0, atol=tolerance)] = 0.0
+    return _body_acceleration_from_contacts(contact_accelerations, wheel_positions, params)
+
+    # return np.array([acceleration_xy[0], acceleration_xy[1], 0.0], dtype=float)
 
 
 def _is_stopped(body_velocity, speed_tolerance, yaw_rate_tolerance):
@@ -478,7 +415,7 @@ def _advance_body_velocity(body_velocity, body_acceleration, dt, speed_tolerance
     return next_velocity
 
 
-def rollout_sliding_deceleration_coulomb(
+def rollout_sliding_deceleration(
     body_velocity,
     wheel_braking_deceleration,
     params=None,
@@ -487,8 +424,9 @@ def rollout_sliding_deceleration_coulomb(
     speed_tolerance=1e-4,
     yaw_rate_tolerance=1e-4,
     deceleration_fn=sliding_deceleration_coulomb_fixed_axis,
+    deceleration_kwargs=None,
 ):
-    """Roll out pose and body velocity under the Coulomb sliding deceleration model.
+    """Roll out pose and body velocity under a sliding deceleration model.
 
     Args:
         body_velocity: Initial ``[vx, vy, yaw_rate]`` body velocity.
@@ -499,7 +437,10 @@ def rollout_sliding_deceleration_coulomb(
         max_time: Maximum rollout duration in seconds.
         speed_tolerance: Translational stopping threshold in m/s.
         yaw_rate_tolerance: Yaw-rate stopping threshold in rad/s.
-        deceleration_fn: Coulomb deceleration function used for each step.
+        deceleration_fn: Deceleration function used for each step.
+        deceleration_kwargs: Additional keyword arguments passed to
+            ``deceleration_fn``. If omitted, the wheel braking value and
+            physical parameters are passed for the default roller models.
     Returns:
         ``(states, velocities, stop_time, stopped)``. ``states`` are
         ``[x, y, theta]`` rows, and ``velocities`` are ``[vx, vy, yaw_rate]`` rows.
@@ -517,6 +458,13 @@ def rollout_sliding_deceleration_coulomb(
         raise ValueError("speed_tolerance must be positive")
     if yaw_rate_tolerance <= 0.0:
         raise ValueError("yaw_rate_tolerance must be positive")
+    if deceleration_kwargs is None:
+        deceleration_kwargs = {
+            "wheel_braking_deceleration": wheel_braking_deceleration,
+            "params": params,
+        }
+    else:
+        deceleration_kwargs = dict(deceleration_kwargs)
 
     max_steps = int(np.ceil(max_time / dt))
     states = [np.zeros(3, dtype=float)]
@@ -533,103 +481,7 @@ def rollout_sliding_deceleration_coulomb(
         if step <= 0.0:
             break
 
-        acceleration = deceleration_fn(
-            velocity,
-            wheel_braking_deceleration=wheel_braking_deceleration,
-            params=params,
-        )
-        x, y, theta = states[-1]
-        c = np.cos(theta)
-        s = np.sin(theta)
-        states.append(
-            np.array(
-                [
-                    x + step * (c * velocity[0] - s * velocity[1]),
-                    y + step * (s * velocity[0] + c * velocity[1]),
-                    theta + step * velocity[2],
-                ],
-                dtype=float,
-            )
-        )
-
-        velocity = _advance_body_velocity(
-            velocity,
-            acceleration,
-            step,
-            speed_tolerance=speed_tolerance,
-            yaw_rate_tolerance=yaw_rate_tolerance,
-        )
-        velocities.append(velocity.copy())
-
-        stopped = _is_stopped(velocity, speed_tolerance, yaw_rate_tolerance)
-        if stopped:
-            stop_time = t + step
-
-    return np.asarray(states), np.asarray(velocities), stop_time, stopped
-
-
-def rollout_sliding_deceleration_approx(
-    body_velocity,
-    wheel_braking_deceleration,
-    params=None,
-    dt=0.005,
-    max_time=5.0,
-    speed_tolerance=1e-4,
-    yaw_rate_tolerance=1e-4,
-):
-    """Roll out pose and body velocity under the continuous sliding-approx model.
-
-    Mirrors ``rollout_sliding_deceleration``'s integration loop, but calls
-    ``sliding_deceleration_approx_model`` instead of the Coulomb sign-switch
-    model.
-
-    Args:
-        body_velocity: Initial ``[vx, vy, yaw_rate]`` body velocity.
-        wheel_braking_deceleration: Per-wheel roller-axis braking deceleration,
-            calibrated via ``individual_wheel_braking_deceleration(..., model="approx")``.
-        params: Mecanum physical parameters, or ``None`` for defaults.
-        dt: Integration step in seconds.
-        max_time: Maximum rollout duration in seconds.
-        speed_tolerance: Translational stopping threshold in m/s.
-        yaw_rate_tolerance: Yaw-rate stopping threshold in rad/s.
-    Returns:
-        ``(states, velocities, stop_time, stopped)``, matching
-        ``rollout_sliding_deceleration``'s return shape.
-    """
-    if params is None:
-        params = MecanumPhysicsParams()
-    velocity = np.asarray(body_velocity, dtype=float)
-    if velocity.shape != (3,):
-        raise ValueError("body_velocity must have shape (3,)")
-    if dt <= 0.0:
-        raise ValueError("dt must be positive")
-    if max_time <= 0.0:
-        raise ValueError("max_time must be positive")
-    if speed_tolerance <= 0.0:
-        raise ValueError("speed_tolerance must be positive")
-    if yaw_rate_tolerance <= 0.0:
-        raise ValueError("yaw_rate_tolerance must be positive")
-
-    max_steps = int(np.ceil(max_time / dt))
-    states = [np.zeros(3, dtype=float)]
-    velocities = [velocity.copy()]
-    stopped = _is_stopped(velocity, speed_tolerance, yaw_rate_tolerance)
-    stop_time = 0.0 if stopped else max_time
-
-    for step_idx in range(max_steps):
-        if stopped:
-            break
-
-        t = step_idx * dt
-        step = min(dt, max_time - t)
-        if step <= 0.0:
-            break
-
-        acceleration = sliding_deceleration_approx_model(
-            velocity,
-            wheel_braking_deceleration=wheel_braking_deceleration,
-            params=params,
-        )
+        acceleration = deceleration_fn(velocity, **deceleration_kwargs)
         x, y, theta = states[-1]
         c = np.cos(theta)
         s = np.sin(theta)
@@ -668,13 +520,13 @@ def rollout_discrete_empirical_deceleration(
     dt=0.005,
     max_time=5.0,
     speed_tolerance=1e-4,
+    params=None,
+    yaw_rate_tolerance=1e-4,
 ):
     """Roll out pose and body velocity under the discrete empirical deceleration model.
 
-    Mirrors ``rollout_sliding_deceleration``'s integration loop, but calls
-    ``sliding_deceleration_discrete_emperical`` instead of the roller
-    friction-circle model. Yaw rate is held constant because that model only
-    specifies body-x/y deceleration.
+    Delegates to ``rollout_sliding_deceleration`` with the empirical
+    deceleration function and its model-specific parameters.
 
     Args:
         body_velocity: Initial ``[vx, vy, yaw_rate]`` body velocity.
@@ -684,69 +536,30 @@ def rollout_discrete_empirical_deceleration(
         dt: Integration step in seconds.
         max_time: Maximum rollout duration in seconds.
         speed_tolerance: Translational stopping threshold in m/s.
+        params: Mecanum physical parameters, or ``None`` for defaults.
+        yaw_rate_tolerance: Yaw-rate stopping threshold in rad/s.
     Returns:
         ``(states, velocities, stop_time, stopped)``, matching
         ``rollout_sliding_deceleration``'s return shape.
     """
-    velocity = np.asarray(body_velocity, dtype=float)
-    if velocity.shape != (3,):
-        raise ValueError("body_velocity must have shape (3,)")
-    if dt <= 0.0:
-        raise ValueError("dt must be positive")
-    if max_time <= 0.0:
-        raise ValueError("max_time must be positive")
-    if speed_tolerance <= 0.0:
-        raise ValueError("speed_tolerance must be positive")
-
-    max_steps = int(np.ceil(max_time / dt))
-    states = [np.zeros(3, dtype=float)]
-    velocities = [velocity.copy()]
-    stopped = np.linalg.norm(velocity[:2]) <= speed_tolerance
-    stop_time = 0.0 if stopped else max_time
-
-    for step_idx in range(max_steps):
-        if stopped:
-            break
-
-        t = step_idx * dt
-        step = min(dt, max_time - t)
-        if step <= 0.0:
-            break
-
-        acceleration = sliding_deceleration_discrete_emperical(
-            velocity[:2],
-            cardinal_body_deceleration=cardinal_body_deceleration,
-            diagonal_body_deceleration=diagonal_body_deceleration,
-            diagonal_angle_half_width_degrees=diagonal_angle_half_width_degrees,
-        )
-        x, y, theta = states[-1]
-        c = np.cos(theta)
-        s = np.sin(theta)
-        states.append(
-            np.array(
-                [
-                    x + step * (c * velocity[0] - s * velocity[1]),
-                    y + step * (s * velocity[0] + c * velocity[1]),
-                    theta + step * velocity[2],
-                ],
-                dtype=float,
-            )
-        )
-
-        translation = velocity[:2] + step * acceleration[:2]
-        opposes_motion = velocity[:2] * acceleration[:2] < 0.0
-        crossed_zero = np.signbit(velocity[:2]) != np.signbit(translation)
-        translation[opposes_motion & crossed_zero] = 0.0
-        if np.linalg.norm(translation) <= speed_tolerance:
-            translation[:] = 0.0
-        velocity = np.array([translation[0], translation[1], velocity[2]], dtype=float)
-        velocities.append(velocity.copy())
-
-        stopped = np.linalg.norm(velocity[:2]) <= speed_tolerance
-        if stopped:
-            stop_time = t + step
-
-    return np.asarray(states), np.asarray(velocities), stop_time, stopped
+    if params is None:
+        params = MecanumPhysicsParams()
+    return rollout_sliding_deceleration(
+        body_velocity,
+        wheel_braking_deceleration=None,
+        params=params,
+        dt=dt,
+        max_time=max_time,
+        speed_tolerance=speed_tolerance,
+        yaw_rate_tolerance=yaw_rate_tolerance,
+        deceleration_fn=sliding_deceleration_discrete_emperical,
+        deceleration_kwargs={
+            "cardinal_body_deceleration": cardinal_body_deceleration,
+            "diagonal_body_deceleration": diagonal_body_deceleration,
+            "diagonal_angle_half_width_degrees": diagonal_angle_half_width_degrees,
+            "params": params,
+        },
+    )
 
 
 def _independent_axis_brake_profile(initial_speed, deceleration, dt):
@@ -810,8 +623,7 @@ __all__ = [
     "sliding_deceleration_coulomb_fixed_axis",
     "sliding_deceleration_coulomb_velocity_axis",
     "sliding_deceleration_discrete_emperical",
-    "rollout_sliding_deceleration_coulomb",
-    "rollout_sliding_deceleration_approx",
+    "rollout_sliding_deceleration",
     "rollout_discrete_empirical_deceleration",
     "rollout_independent_axis_braking",
 ]
