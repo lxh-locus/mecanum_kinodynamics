@@ -317,7 +317,297 @@ $$d_\text{ref}(v) = \frac{v^2}{2\,a_\text{max}}$$
 
 ---
 
-## 8. Coulomb sliding-decay rollout (`rollout_sliding_deceleration_coulomb`)
+## 8. Coulomb sliding deceleration (`sliding_deceleration_coulomb_model`)
+
+This section follows `sliding_deceleration_coulomb_model` in execution order.
+The function maps a body velocity to a body-frame planar acceleration by
+resolving each wheel's local contact velocity along that wheel's roller axis.
+Only the resisted roller-axis component is braked.  The response is Coulomb-like:
+each slipping roller contributes a fixed magnitude whose sign opposes its
+projected velocity.
+
+Let
+
+$$
+\mathbf{v} =
+\begin{pmatrix}v_x\\v_y\\\omega\end{pmatrix},
+\qquad
+\mathbf{a} =
+\begin{pmatrix}a_x\\a_y\\\alpha\end{pmatrix}.
+$$
+
+The translational velocity is body-frame velocity, $\omega$ is body yaw rate,
+and $\mathbf{a}$ is the returned body-frame acceleration.
+
+### 8.1 Convert and validate inputs
+
+```python
+velocity = np.asarray(body_velocity, dtype=float)
+if velocity.shape not in ((2,), (3,)):
+  raise ValueError("body_velocity must have shape (2,) or (3,)")
+if wheel_braking_deceleration <= 0.0:
+  raise ValueError("wheel_braking_deceleration must be positive")
+if tolerance <= 0.0:
+  raise ValueError("tolerance must be positive")
+```
+
+The input is converted to a floating-point vector and must contain either
+translation only or translation plus yaw rate:
+
+$$
+\mathbf{v}\in\mathbb{R}^2
+\quad\text{or}\quad
+\mathbf{v}\in\mathbb{R}^3.
+$$
+
+The per-wheel braking value $b_w$ and the numerical threshold $\varepsilon$
+must both be positive:
+
+$$
+b_w>0,
+\qquad
+\varepsilon>0.
+$$
+
+### 8.2 Separate translation and yaw rate
+
+```python
+translation = velocity[:2]
+yaw_rate = velocity[2] if velocity.shape == (3,) else 0.0
+speed = np.linalg.norm(translation)
+if speed <= tolerance and abs(yaw_rate) <= tolerance:
+  return np.zeros(3, dtype=float)
+```
+
+The translational part is
+
+$$
+\mathbf{v}_{xy}=\begin{pmatrix}v_x\\v_y\end{pmatrix},
+$$
+
+and a two-component input is interpreted as having $\omega=0$.  The overall
+early-exit condition is
+
+$$
+\|\mathbf{v}_{xy}\|_2\le\varepsilon
+\quad\land\quad
+|\omega|\le\varepsilon.
+$$
+
+When both are true, the function returns $[0,0,0]^\mathsf{T}$ because there is
+no meaningful slip direction from which to construct a braking response.
+
+### 8.3 Wheel positions and roller directions
+
+```python
+wheel_positions = np.array(
+  [
+    [params.wb_hlength, params.wb_hwidth],
+    [params.wb_hlength, -params.wb_hwidth],
+    [-params.wb_hlength, params.wb_hwidth],
+    [-params.wb_hlength, -params.wb_hwidth],
+  ],
+  dtype=float,
+)
+roller_directions = np.asarray(params.roller_directions, dtype=float)
+```
+
+The four wheel locations are represented as
+
+$$
+\mathbf{p}_i=(p_{x,i},p_{y,i}),
+\qquad i=1,\ldots,4,
+$$
+
+with half-length $\rho$ and half-width $l$ supplied by the parameter object.
+The corresponding roller directions are stored as vectors $\mathbf{r}_i$.
+
+```python
+if roller_directions.shape != (4, 2):
+  raise ValueError("params.roller_directions must have shape (4, 2)")
+roller_norms = np.linalg.norm(roller_directions, axis=1)
+if np.any(roller_norms <= 0.0):
+  raise ValueError("params.roller_directions must contain nonzero vectors")
+roller_directions /= roller_norms[:, np.newaxis]
+```
+
+Every roller direction is normalized:
+
+$$
+\widehat{\mathbf{r}}_i
+=\frac{\mathbf{r}_i}{\|\mathbf{r}_i\|_2}.
+$$
+
+The shape and nonzero checks ensure that this normalization is defined.  In
+the equations below, $\widehat{\mathbf{r}}_i$ denotes the normalized direction.
+
+### 8.4 Local contact velocity at each wheel
+
+```python
+contact_velocities = np.column_stack(
+  [
+    translation[0] - yaw_rate * wheel_positions[:, 1],
+    translation[1] + yaw_rate * wheel_positions[:, 0],
+  ]
+)
+```
+
+For planar rigid-body motion, the velocity at wheel $i$ is translation plus
+the cross product of yaw rate with the wheel position:
+
+$$
+\mathbf{u}_i=
+\begin{pmatrix}
+v_x-\omega p_{y,i}\\
+v_y+\omega p_{x,i}
+\end{pmatrix}.
+$$
+
+The minus sign in the first component and plus sign in the second follow from
+the body-frame planar relation
+$\boldsymbol{\omega}\times\mathbf{p}_i=(-\omega p_{y,i},\omega p_{x,i})$.
+
+### 8.5 Normalize nonzero contact velocities
+
+```python
+contact_speeds = np.linalg.norm(contact_velocities, axis=1)
+contact_directions = np.zeros_like(contact_velocities)
+nonzero_contacts = contact_speeds > tolerance
+contact_directions[nonzero_contacts] = (
+  contact_velocities[nonzero_contacts]
+  / contact_speeds[nonzero_contacts, np.newaxis]
+)
+```
+
+For each wheel,
+
+$$
+u_i=\|\mathbf{u}_i\|_2.
+$$
+
+Only wheels with $u_i>\varepsilon$ are normalized.  Their unit contact
+directions are
+
+$$
+\widehat{\mathbf{u}}_i=\frac{\mathbf{u}_i}{u_i}.
+$$
+
+The zero initialization leaves $\widehat{\mathbf{u}}_i=\mathbf{0}$ for a
+wheel whose local contact velocity is below tolerance, avoiding division by
+zero.
+
+### 8.6 Project slip onto each roller axis
+
+```python
+rolling_projection = np.sum(
+  roller_directions * contact_directions,
+  axis=1,
+)
+rolling_projection = np.clip(rolling_projection, -1.0, 1.0)
+```
+
+The resisted component is the dot product
+
+$$
+s_i=\widehat{\mathbf{r}}_i^{\mathsf T}
+\widehat{\mathbf{u}}_i.
+$$
+
+Because both vectors are unit vectors when active, $s_i\in[-1,1]$.  Clipping
+enforces that numerical roundoff cannot produce a value outside this physical
+range.  The sign of $s_i$ identifies the direction of slip along the roller
+axis; its magnitude is not used by the hard Coulomb limit.
+
+### 8.7 Apply the Coulomb braking rule
+
+```python
+axis_acceleration = -wheel_braking_deceleration * np.sign(rolling_projection)
+axis_acceleration[np.isclose(rolling_projection, 0.0, atol=tolerance)] = 0.0
+```
+
+For wheel $i$, the scalar acceleration along its roller axis is
+
+$$
+b_i=-b_w\,\operatorname{sgn}(s_i).
+$$
+
+Thus $b_i=-b_w$ when the projected slip is positive, $b_i=+b_w$ when it is
+negative, and $b_i=0$ when the projection is zero within tolerance.  This is
+the discontinuity of the Coulomb model: changing the sign of $s_i$ changes the
+braking response abruptly.
+
+### 8.8 Resolve each axis response into body $x/y$
+
+```python
+contact_accelerations = axis_acceleration[:, np.newaxis] * roller_directions
+acceleration = np.sum(contact_accelerations, axis=0)
+```
+
+The scalar axis response is converted back into a body-frame vector:
+
+$$
+\mathbf{a}^{xy}_i=b_i\widehat{\mathbf{r}}_i.
+$$
+
+The total translational acceleration is the sum of the four wheel contributions:
+
+$$
+\mathbf{a}^{xy}=\sum_{i=1}^{4}\mathbf{a}^{xy}_i
+=\begin{pmatrix}a_x\\a_y\end{pmatrix}.
+$$
+
+The perpendicular roller direction contributes no acceleration because the
+model treats it as free rolling.
+
+### 8.9 Sum wheel moments to obtain yaw acceleration
+
+```python
+yaw_acceleration = (
+  params.body_mass
+  * np.sum(
+    wheel_positions[:, 0] * contact_accelerations[:, 1]
+    - wheel_positions[:, 1] * contact_accelerations[:, 0]
+  )
+  / params.body_yaw_inertia
+)
+```
+
+The moment contribution of wheel $i$ about the body center is
+
+$$
+	au_i=p_{x,i}a_{y,i}-p_{y,i}a_{x,i}.
+$$
+
+Because `contact_accelerations` is expressed as acceleration rather than force,
+the code multiplies the total moment sum by body mass $m_s$ and divides by yaw
+inertia $J_C$:
+
+$$
+\alpha=\frac{m_s}{J_C}\sum_{i=1}^{4}
+\left(p_{x,i}a_{y,i}-p_{y,i}a_{x,i}\right).
+$$
+
+This reduced model includes yaw generated by the resolved wheel responses, but
+does not solve a full constrained wheel-load or tire-force model.
+
+### 8.10 Return the planar acceleration
+
+```python
+return np.array([acceleration[0], acceleration[1], yaw_acceleration], dtype=float)
+```
+
+The result is the three-component body acceleration
+
+$$
+\boxed{
+\mathbf{a}=\begin{pmatrix}a_x\\a_y\\\alpha\end{pmatrix}}
+$$
+
+with units of $m/s^2$ for $a_x,a_y$, and $rad/s^2$ for $\alpha$.
+
+---
+
+## 9. Coulomb sliding-decay rollout (`rollout_sliding_deceleration_coulomb`)
 
 This section follows `rollout_sliding_deceleration_coulomb` in execution order.
 The function advances a planar pose and body velocity in discrete time.  The
@@ -339,7 +629,7 @@ $$
 where $(v_{x,k},v_{y,k})$ is body-frame translational velocity, $\omega_k$ is
 body yaw rate, and $(x_k,y_k,\theta_k)$ is the world pose at sample $k$.
 
-### 8.1 Defaults and input validation
+### 9.1 Defaults and input validation
 
 ```python
 if params is None:
@@ -379,7 +669,7 @@ $$
 |\omega| \le \varepsilon_\omega.
 $$
 
-### 8.2 Number of integration steps and initial state
+### 9.2 Number of integration steps and initial state
 
 ```python
 max_steps = int(np.ceil(max_time / dt))
@@ -415,7 +705,7 @@ If the initial velocity already satisfies this condition, the function returns
 immediately with `stop_time = 0`.  Otherwise, `max_time` is used as a sentinel
 until the loop finds an actual stopping step.
 
-### 8.3 Loop time and final partial step
+### 9.3 Loop time and final partial step
 
 ```python
 for step_idx in range(max_steps):
@@ -443,7 +733,7 @@ $$
 
 The $h_k\le0$ guard prevents an extra update after the time horizon.
 
-### 8.4 Coulomb wheel deceleration
+### 9.4 Coulomb wheel deceleration
 
 ```python
 acceleration = sliding_deceleration_coulomb_model(
@@ -515,7 +805,7 @@ $$
 The hard sign function is why this model is piecewise constant in roller-force
 direction and can change abruptly when a wheel projection crosses zero.
 
-### 8.5 Body-frame velocity to world-frame pose update
+### 9.5 Body-frame velocity to world-frame pose update
 
 ```python
 x, y, theta = states[-1]
@@ -563,7 +853,7 @@ $$
 
 Notice that pose is advanced using the velocity at the beginning of the step.
 
-### 8.6 Velocity update and sign-crossing clamp
+### 9.6 Velocity update and sign-crossing clamp
 
 ```python
 velocity = _advance_body_velocity(
@@ -602,7 +892,7 @@ This is a discrete approximation to the first zero crossing, and prevents a
 braking force from numerically carrying a component through rest and making it
 reverse direction.
 
-### 8.7 Translational and yaw stopping projection
+### 9.7 Translational and yaw stopping projection
 
 The helper then applies two independent tolerance projections:
 
@@ -625,7 +915,7 @@ components are removed together when their Euclidean speed is small enough.
 The updated velocity is stored so that `states[k]` and `velocities[k]` remain
 aligned by sample index.
 
-### 8.8 Stop detection and return values
+### 9.8 Stop detection and return values
 
 ```python
 stopped = _is_stopped(velocity, speed_tolerance, yaw_rate_tolerance)
@@ -665,7 +955,7 @@ $T_\text{max}$.
 
 ---
 
-## 9. Relationship between the four scripts
+## 10. Relationship between the four scripts
 
 ```
 mecanum_common.py

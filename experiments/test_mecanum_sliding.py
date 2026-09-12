@@ -5,7 +5,8 @@ from mecanum_physics import MecanumPhysicsParams
 from mecanum_sliding import (
     individual_wheel_braking_deceleration,
     sliding_deceleration_approx_model,
-    sliding_deceleration_coulomb_model,
+    sliding_deceleration_coulomb_fixed_axis,
+    sliding_deceleration_coulomb_velocity_axis,
     sliding_deceleration_discrete_emperical,
 )
 
@@ -38,7 +39,7 @@ def test_individual_wheel_braking_deceleration_rejects_invalid_inputs():
 
 
 def test_sliding_deceleration_returns_zero_for_stationary_body():
-    actual = sliding_deceleration_coulomb_model([0.0, 0.0, 0.0], 1.0)
+    actual = sliding_deceleration_coulomb_fixed_axis([0.0, 0.0, 0.0], 1.0)
 
     np.testing.assert_allclose(actual, np.zeros(3))
 
@@ -46,13 +47,38 @@ def test_sliding_deceleration_returns_zero_for_stationary_body():
 def test_sliding_deceleration_calibrates_body_x_braking_without_yaw():
     wheel_braking = individual_wheel_braking_deceleration(4.0)
 
-    actual = sliding_deceleration_coulomb_model([1.0, 0.0, 0.0], wheel_braking)
+    actual = sliding_deceleration_coulomb_fixed_axis([1.0, 0.0, 0.0], wheel_braking)
 
     np.testing.assert_allclose(actual, [-4.0, 0.0, 0.0], atol=1e-12)
 
 
+def test_sliding_deceleration_velocity_axis_calibrates_body_x_braking_without_yaw():
+    wheel_braking = 1.0
+
+    actual = sliding_deceleration_coulomb_velocity_axis([1.0, 0.0, 0.0], wheel_braking)
+
+    np.testing.assert_allclose(actual, [-4.0, 0.0, 0.0], atol=1e-12)
+
+
+def test_sliding_deceleration_velocity_axis_returns_zero_for_stationary_body():
+    actual = sliding_deceleration_coulomb_velocity_axis([0.0, 0.0, 0.0], 1.0)
+
+    np.testing.assert_allclose(actual, np.zeros(3))
+
+
+def test_sliding_deceleration_velocity_axis_rejects_invalid_inputs():
+    with pytest.raises(ValueError, match="shape"):
+        sliding_deceleration_coulomb_velocity_axis([1.0], 1.0)
+
+    with pytest.raises(ValueError, match="positive"):
+        sliding_deceleration_coulomb_velocity_axis([1.0, 0.0], 0.0)
+
+    with pytest.raises(ValueError, match="tolerance"):
+        sliding_deceleration_coulomb_velocity_axis([1.0, 0.0], 1.0, tolerance=0.0)
+
+
 def test_sliding_deceleration_includes_yaw_moment_from_contact_forces():
-    actual = sliding_deceleration_coulomb_model([0.0, 0.0, 1.0], 1.0)
+    actual = sliding_deceleration_coulomb_fixed_axis([0.0, 0.0, 1.0], 1.0)
 
     assert actual[0] == pytest.approx(0.0, abs=1e-12)
     assert actual[1] == pytest.approx(0.0, abs=1e-12)
@@ -61,13 +87,13 @@ def test_sliding_deceleration_includes_yaw_moment_from_contact_forces():
 
 def test_sliding_deceleration_rejects_invalid_inputs():
     with pytest.raises(ValueError, match="shape"):
-        sliding_deceleration_coulomb_model([1.0], 1.0)
+        sliding_deceleration_coulomb_fixed_axis([1.0], 1.0)
 
     with pytest.raises(ValueError, match="positive"):
-        sliding_deceleration_coulomb_model([1.0, 0.0], 0.0)
+        sliding_deceleration_coulomb_fixed_axis([1.0, 0.0], 0.0)
 
     with pytest.raises(ValueError, match="tolerance"):
-        sliding_deceleration_coulomb_model([1.0, 0.0], 1.0, tolerance=0.0)
+        sliding_deceleration_coulomb_fixed_axis([1.0, 0.0], 1.0, tolerance=0.0)
 
 
 def test_sliding_deceleration_discrete_emperical_uses_cardinal_value_on_axes():

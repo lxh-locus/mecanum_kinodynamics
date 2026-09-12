@@ -11,7 +11,7 @@ try:
     from .mecanum_physics import MecanumPhysicsParams, inverse_kinematics
     from .mecanum_sliding import (
         individual_wheel_braking_deceleration,
-        sliding_deceleration_coulomb_model,
+        sliding_deceleration_coulomb_fixed_axis,
         sliding_deceleration_discrete_emperical,
     )
 except ImportError:
@@ -19,7 +19,7 @@ except ImportError:
     from mecanum_physics import MecanumPhysicsParams, inverse_kinematics
     from mecanum_sliding import (
         individual_wheel_braking_deceleration,
-        sliding_deceleration_coulomb_model,
+        sliding_deceleration_coulomb_fixed_axis,
         sliding_deceleration_discrete_emperical,
     )
 
@@ -60,7 +60,7 @@ def plot_sliding_deceleration_xy(
     max_body_x_deceleration=4.0,
     range_scale=1.15,
     angle_sweep=16,
-    deceleration_fn=sliding_deceleration_coulomb_model,
+    deceleration_fn=sliding_deceleration_coulomb_fixed_axis,
     deceleration_kwargs=None,
     arrow_color="tab:red",
     title="Sliding Deceleration by Body-Velocity Direction",
@@ -174,7 +174,7 @@ def main():
         max_body_x_deceleration=args.max_body_x_deceleration,
         range_scale=args.range_scale,
         angle_sweep=args.sweep_n_angles,
-        deceleration_fn=sliding_deceleration_coulomb_model,
+        deceleration_fn=sliding_deceleration_coulomb_fixed_axis,
     )
     plot_sliding_deceleration_xy(
         max_wheel_velocity=args.max_wheel_velocity,

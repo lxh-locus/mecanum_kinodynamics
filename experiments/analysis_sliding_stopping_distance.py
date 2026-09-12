@@ -7,7 +7,8 @@ swept-footprint path on the right. This mirrors the bottom-left (velocity
 profile) and top-right (rollout detail) panels of inspect_rollout_archives.py.
 
 Strategies compared:
-- sliding roller friction, coulomb model (mecanum_sliding.rollout_sliding_deceleration_coulomb)
+- sliding roller friction, coulomb model (mecanum_sliding.rollout_sliding_deceleration_coulomb_fixed_axis)
+- sliding roller friction, velocity-axis Coulomb model (mecanum_sliding.sliding_deceleration_coulomb_velocity_axis)
 - sliding roller friction, continuous approximation (mecanum_sliding.rollout_sliding_deceleration_approx)
 - independent axis braking (mecanum_sliding.rollout_independent_axis_braking)
 - discrete empirical heading-dependent braking (mecanum_sliding.rollout_discrete_empirical_deceleration)
@@ -28,6 +29,7 @@ try:
         rollout_independent_axis_braking,
         rollout_sliding_deceleration_coulomb,
         rollout_sliding_deceleration_approx,
+        sliding_deceleration_coulomb_velocity_axis,
     )
 except ImportError:
     from mecanum_common import Mecanum
@@ -38,6 +40,7 @@ except ImportError:
         rollout_independent_axis_braking,
         rollout_sliding_deceleration_coulomb,
         rollout_sliding_deceleration_approx,
+        sliding_deceleration_coulomb_velocity_axis,
     )
 
 
@@ -144,7 +147,7 @@ def main():
     parser.add_argument(
         "--strategies",
         nargs="+",
-        choices=["sliding-coulomb", "sliding-approx", "independent-axis", "discrete-empirical", "all"],
+        choices=["sliding-coulomb", "sliding-coulomb-velocity-axis", "sliding-approx", "independent-axis", "discrete-empirical", "all"],
         default=["sliding-coulomb", "independent-axis"],
         help=(
             "Braking strategies to roll out and display. 'sliding' is the roller "
@@ -203,7 +206,7 @@ def main():
 
     selected = set(args.strategies)
     if "all" in selected:
-        selected = {"sliding-coulomb", "sliding-approx", "independent-axis", "discrete-empirical"}
+        selected = {"sliding-coulomb", "sliding-coulomb-velocity-axis", "sliding-approx", "independent-axis", "discrete-empirical"}
     if args.max_body_x_deceleration <= 0.0:
         raise ValueError("max-body-x-deceleration must be positive")
     if args.brake_deceleration_x <= 0.0 or args.brake_deceleration_y <= 0.0 or args.brake_deceleration_yaw <= 0.0:
@@ -249,6 +252,33 @@ def main():
         )
         print(f"sliding roller friction (Coulomb): stop_time={stop_time:.3f} s, stopped={stopped}")
         strategies.append(("sliding roller friction (Coulomb)", "tab:red", slide_states, slide_velocities))
+
+    if "sliding-coulomb-velocity-axis" in selected:
+        wheel_braking_deceleration = individual_wheel_braking_deceleration(
+            args.max_body_x_deceleration, params=params
+        )
+        velocity_axis_states, velocity_axis_velocities, velocity_axis_stop_time, velocity_axis_stopped = (
+            rollout_sliding_deceleration_coulomb(
+                initial_velocity,
+                wheel_braking_deceleration=wheel_braking_deceleration,
+                params=params,
+                dt=args.dt,
+                max_time=args.max_time,
+                deceleration_fn=sliding_deceleration_coulomb_velocity_axis,
+            )
+        )
+        print(
+            "sliding roller friction (Coulomb, velocity axis): "
+            f"stop_time={velocity_axis_stop_time:.3f} s, stopped={velocity_axis_stopped}"
+        )
+        strategies.append(
+            (
+                "sliding roller friction (Coulomb, velocity axis)",
+                "tab:orange",
+                velocity_axis_states,
+                velocity_axis_velocities,
+            )
+        )
 
     if "sliding-approx" in selected:
         approx_wheel_braking_deceleration = individual_wheel_braking_deceleration(

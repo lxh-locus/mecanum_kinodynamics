@@ -27,7 +27,7 @@ try:
     from .mecanum_sliding import (
         individual_wheel_braking_deceleration,
         rollout_sliding_deceleration_coulomb,
-        sliding_deceleration_coulomb_model,
+        sliding_deceleration_coulomb_fixed_axis,
     )
     from .sliding_deceleration_xy import plot_sliding_deceleration_xy
 except ImportError:
@@ -44,7 +44,7 @@ except ImportError:
     from mecanum_sliding import (
         individual_wheel_braking_deceleration,
         rollout_sliding_deceleration_coulomb,
-        sliding_deceleration_coulomb_model,
+        sliding_deceleration_coulomb_fixed_axis,
     )
     from sliding_deceleration_xy import plot_sliding_deceleration_xy
 
@@ -289,7 +289,7 @@ def main():
         max_body_x_deceleration=args.max_body_x_deceleration,
         range_scale=args.direction_range_scale,
         angle_sweep=args.sweep_n_angles,
-        deceleration_fn=sliding_deceleration_coulomb_model,
+        deceleration_fn=sliding_deceleration_coulomb_fixed_axis,
     )
     plt.show()
 

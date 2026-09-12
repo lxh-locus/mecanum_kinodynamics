@@ -168,7 +168,7 @@ def sliding_deceleration_approx_model(
     return np.array([acceleration[0], acceleration[1], yaw_acceleration], dtype=float)
 
 
-def sliding_deceleration_coulomb_model(
+def sliding_deceleration_coulomb_fixed_axis(
     body_velocity,
     wheel_braking_deceleration,
     params: MecanumPhysicsParams = MecanumPhysicsParams(),
@@ -187,6 +187,9 @@ def sliding_deceleration_coulomb_model(
     the sign of the velocity projected onto its resisted axis. As a result,
     the response changes abruptly when that projection crosses zero instead
     of varying smoothly with slip angle.
+
+    Upshot: Per-wheel braking magnitudes are fixed, and braking directions
+    are fixed along the roller axis.
 
     ``wheel_braking_deceleration`` is the axis-constrained braking value for
     one wheel, in acceleration units. Use
@@ -263,6 +266,117 @@ def sliding_deceleration_coulomb_model(
     axis_acceleration = -wheel_braking_deceleration * np.sign(rolling_projection)
     axis_acceleration[np.isclose(rolling_projection, 0.0, atol=tolerance)] = 0.0
     contact_accelerations = axis_acceleration[:, np.newaxis] * roller_directions
+    acceleration = np.sum(contact_accelerations, axis=0)
+    yaw_acceleration = (
+        params.body_mass
+        * np.sum(
+            wheel_positions[:, 0] * contact_accelerations[:, 1]
+            - wheel_positions[:, 1] * contact_accelerations[:, 0]
+        )
+        / params.body_yaw_inertia
+    )
+    return np.array([acceleration[0], acceleration[1], yaw_acceleration], dtype=float)
+
+
+def sliding_deceleration_coulomb_velocity_axis(
+    body_velocity,
+    wheel_braking_deceleration,
+    params: MecanumPhysicsParams = MecanumPhysicsParams(),
+    tolerance=1e-9,
+):
+    """Generate a planar deceleration using a roller friction-circle model.
+
+    The contact force at each wheel is resolved in the roller-axis frame. The
+    component along ``roller_direction`` is the braking component; the
+    perpendicular component is the free-rolling direction and is therefore
+    not resisted. A friction limit caps each wheel's axis force at its
+    individual braking value. A slipping roller contributes its full axis
+    braking value in the opposite direction of the motion of the roller;
+    a roller with zero velocity along its axis is fully rolling and
+    contributes no braking. This is a Coulomb-style sliding model: each
+    slipping roller applies a fixed-magnitude braking response based only on
+    the sign of the velocity projected onto its resisted axis. As a result,
+    the response changes abruptly when that projection crosses zero instead
+    of varying smoothly with slip angle.
+
+    Upshot: Per-wheel braking magnitudes are fixed, and braking directions
+    are opposite roller body motion
+
+    ``wheel_braking_deceleration`` is the axis-constrained braking value for
+    one wheel, in acceleration units. Use
+    ``individual_wheel_braking_deceleration(..., model="coulomb")`` to obtain it
+    from a desired total body-x deceleration. This is still a reduced model: it
+    assumes equal load sharing, includes yaw moment only from the resolved
+    contact forces, and uses a hard Coulomb-style sliding limit rather than a
+    tire brush or measured slip-angle curve.
+
+    Args:
+        body_velocity: Translational body velocity ``[vx, vy]`` or full planar
+            velocity ``[vx, vy, yaw_rate]``. The yaw rate contributes to each
+            wheel's local contact velocity when present.
+        wheel_braking_deceleration: Positive axis-constrained braking
+            deceleration for one wheel in m/s^2.
+        params: Physical model parameters used for wheel locations, body mass,
+            and yaw inertia.
+        tolerance: Absolute translational-speed threshold below which the
+            returned deceleration is treated as zero.
+    Returns:
+        A length-three NumPy array ``[ax, ay, alpha]`` in m/s^2 and rad/s^2.
+        The result is zero for zero translational velocity.
+    Raises:
+        ValueError: If the velocity has an unsupported shape or a scalar
+            parameter is not positive.
+    """
+    velocity = np.asarray(body_velocity, dtype=float)
+    if velocity.shape not in ((2,), (3,)):
+        raise ValueError("body_velocity must have shape (2,) or (3,)")
+    if wheel_braking_deceleration <= 0.0:
+        raise ValueError("wheel_braking_deceleration must be positive")
+    if tolerance <= 0.0:
+        raise ValueError("tolerance must be positive")
+
+    translation = velocity[:2]
+    yaw_rate = velocity[2] if velocity.shape == (3,) else 0.0
+    speed = np.linalg.norm(translation)
+    if speed <= tolerance and abs(yaw_rate) <= tolerance:
+        return np.zeros(3, dtype=float)
+
+    wheel_positions = np.array(
+        [
+            [params.wb_hlength, params.wb_hwidth],
+            [params.wb_hlength, -params.wb_hwidth],
+            [-params.wb_hlength, params.wb_hwidth],
+            [-params.wb_hlength, -params.wb_hwidth],
+        ],
+        dtype=float,
+    )
+    roller_directions = np.asarray(params.roller_directions, dtype=float)
+    if roller_directions.shape != (4, 2):
+        raise ValueError("params.roller_directions must have shape (4, 2)")
+    roller_norms = np.linalg.norm(roller_directions, axis=1)
+    if np.any(roller_norms <= 0.0):
+        raise ValueError("params.roller_directions must contain nonzero vectors")
+    roller_directions /= roller_norms[:, np.newaxis]
+    contact_velocities = np.column_stack(
+        [
+            translation[0] - yaw_rate * wheel_positions[:, 1],
+            translation[1] + yaw_rate * wheel_positions[:, 0],
+        ]
+    )
+    contact_speeds = np.linalg.norm(contact_velocities, axis=1)
+    contact_directions = np.zeros_like(contact_velocities)
+    nonzero_contacts = contact_speeds > tolerance
+    contact_directions[nonzero_contacts] = (
+        contact_velocities[nonzero_contacts] / contact_speeds[nonzero_contacts, np.newaxis]
+    )
+    rolling_projection = np.sum(roller_directions * contact_directions, axis=1)
+    rolling_projection = np.clip(rolling_projection, -1.0, 1.0)
+
+    # A slipping roller supplies its full Coulomb braking value opposite it's motion
+    # A zero projection means it is fully rolling, so it supplies no braking.
+    axis_acceleration = -wheel_braking_deceleration * contact_directions
+    axis_acceleration[np.isclose(rolling_projection, 0.0, atol=tolerance)] = 0.0
+    contact_accelerations = axis_acceleration
     acceleration = np.sum(contact_accelerations, axis=0)
     yaw_acceleration = (
         params.body_mass
@@ -372,6 +486,7 @@ def rollout_sliding_deceleration_coulomb(
     max_time=5.0,
     speed_tolerance=1e-4,
     yaw_rate_tolerance=1e-4,
+    deceleration_fn=sliding_deceleration_coulomb_fixed_axis,
 ):
     """Roll out pose and body velocity under the Coulomb sliding deceleration model.
 
@@ -384,6 +499,7 @@ def rollout_sliding_deceleration_coulomb(
         max_time: Maximum rollout duration in seconds.
         speed_tolerance: Translational stopping threshold in m/s.
         yaw_rate_tolerance: Yaw-rate stopping threshold in rad/s.
+        deceleration_fn: Coulomb deceleration function used for each step.
     Returns:
         ``(states, velocities, stop_time, stopped)``. ``states`` are
         ``[x, y, theta]`` rows, and ``velocities`` are ``[vx, vy, yaw_rate]`` rows.
@@ -417,7 +533,7 @@ def rollout_sliding_deceleration_coulomb(
         if step <= 0.0:
             break
 
-        acceleration = sliding_deceleration_coulomb_model(
+        acceleration = deceleration_fn(
             velocity,
             wheel_braking_deceleration=wheel_braking_deceleration,
             params=params,
@@ -691,7 +807,8 @@ def rollout_independent_axis_braking(body_velocity, brake_deceleration, dt):
 __all__ = [
     "individual_wheel_braking_deceleration",
     "sliding_deceleration_approx_model",
-    "sliding_deceleration_coulomb_model",
+    "sliding_deceleration_coulomb_fixed_axis",
+    "sliding_deceleration_coulomb_velocity_axis",
     "sliding_deceleration_discrete_emperical",
     "rollout_sliding_deceleration_coulomb",
     "rollout_sliding_deceleration_approx",
