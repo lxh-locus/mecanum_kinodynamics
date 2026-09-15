@@ -103,6 +103,72 @@ def plot_velocity_and_energy(axis, strategies, dt, params):
     return lines + power_lines, labels + power_labels
 
 
+def plot_contact_velocity_profiles(axes, strategies, dt, params):
+    """Draw each wheel's contact-speed magnitude and angle for every strategy."""
+    wheel_positions = np.array(
+        [
+            [params.wb_hlength, params.wb_hwidth],
+            [params.wb_hlength, -params.wb_hwidth],
+            [-params.wb_hlength, params.wb_hwidth],
+            [-params.wb_hlength, -params.wb_hwidth],
+        ],
+        dtype=float,
+    )
+    wheel_names = ("front-left", "front-right", "rear-left", "rear-right")
+    angle_axes = []
+    for wheel_index, (axis, wheel_name) in enumerate(zip(axes.flat, wheel_names)):
+        axis.axhline(0.0, color="0.7", linewidth=0.8)
+        angle_axis = axis.twinx()
+        angle_axes.append(angle_axis)
+        angle_axis.axhline(0.0, color="0.7", linewidth=0.6, linestyle=":")
+        roller_angle = np.degrees(np.arctan2(*params.roller_directions[wheel_index][::-1]))
+        rolling_angles = (roller_angle - 90.0, roller_angle + 90.0)
+        wheel_x, wheel_y = wheel_positions[wheel_index]
+        angle_traces = []
+        for label, color, _, velocities in strategies:
+            times = np.arange(len(velocities)) * dt
+            contact_velocities = np.column_stack(
+                [
+                    velocities[:, 0] - velocities[:, 2] * wheel_y,
+                    velocities[:, 1] + velocities[:, 2] * wheel_x,
+                ]
+            )
+            speed = np.linalg.norm(contact_velocities, axis=1)
+            angle = np.degrees(np.arctan2(contact_velocities[:, 1], contact_velocities[:, 0]))
+            angle_traces.append(angle)
+            axis.plot(times, speed, color=color, linestyle="-", linewidth=1.3, label=f"{label} magnitude")
+            angle_axis.plot(
+                times,
+                angle,
+                color=color,
+                linestyle="--",
+                linewidth=1.3,
+                label=f"{label} angle",
+            )
+        angle_data = np.concatenate(angle_traces)
+        angle_center = 0.5 * (np.min(angle_data) + np.max(angle_data))
+        angle_half_range = max(
+            np.max(np.abs(angle_data - angle_center)),
+            np.max(np.abs(np.asarray(rolling_angles) - angle_center)),
+        )
+        angle_axis.set_ylim(angle_center - angle_half_range, angle_center + angle_half_range)
+        for rolling_angle in rolling_angles:
+            angle_axis.axhline(
+                rolling_angle,
+                color="black",
+                linewidth=1.0,
+                label="perpendicular to roller axis" if wheel_index == 0 and rolling_angle == rolling_angles[0] else "",
+            )
+        axis.set_title(f"{wheel_name} contact velocity", fontsize="medium")
+        axis.set_xlabel("time [s]")
+        axis.set_ylabel("magnitude [m/s]")
+        angle_axis.set_ylabel("angle [deg]")
+        axis.grid(True, alpha=0.25)
+    magnitude_handles, magnitude_labels = axes.flat[0].get_legend_handles_labels()
+    angle_handles, angle_labels = angle_axes[0].get_legend_handles_labels()
+    return magnitude_handles + angle_handles, magnitude_labels + angle_labels
+
+
 def plot_rollout_paths(axis, strategies, footprint, max_footprints):
     """Draw each strategy's path with swept footprints and a shared start footprint."""
     for label, color, states, _ in strategies:
@@ -143,7 +209,7 @@ def main():
         "--strategies",
         nargs="+",
         choices=["sliding-coulomb", "sliding-coulomb-velocity-axis", "sliding-approx", "independent-axis", "discrete-empirical", "all"],
-        default=["sliding-coulomb", "independent-axis"],
+        default=["sliding-coulomb-velocity-axis", "independent-axis"],
         help=(
             "Braking strategies to roll out and display. 'sliding' is the roller "
             "friction-circle Coulomb model, 'sliding-approx' is its continuous "
@@ -345,6 +411,22 @@ def main():
         frameon=False,
     )
     energy_figure.tight_layout(rect=(0.0, 0.28, 1.0, 0.93))
+
+    contact_figure, contact_axes = plt.subplots(2, 2, figsize=(12, 8), sharex=True, sharey=True)
+    contact_figure.suptitle(
+        f"Wheel Contact Velocities: vx={args.vx:g} m/s, vy={args.vy:g} m/s, \u03c9={args.omega:g} rad/s"
+    )
+    contact_handles, contact_labels = plot_contact_velocity_profiles(contact_axes, strategies, args.dt, params)
+    contact_figure.legend(
+        contact_handles,
+        contact_labels,
+        loc="lower center",
+        bbox_to_anchor=(0.5, 0.01),
+        fontsize="x-small",
+        ncol=3,
+        frameon=False,
+    )
+    contact_figure.tight_layout(rect=(0.0, 0.12, 1.0, 0.93))
 
     plt.show()
 
