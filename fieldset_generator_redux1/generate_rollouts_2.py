@@ -29,10 +29,32 @@ from experiments.kinematic_boundary_rollout_limited import (
 )
 from experiments.mecanum_common import Mecanum
 from experiments.mecanum_physics import MecanumPhysicsParams
-from experiments.mecanum_sliding import individual_wheel_braking_deceleration, rollout_sliding_deceleration
+from experiments.mecanum_sliding import (
+    individual_wheel_braking_deceleration,
+    rollout_discrete_empirical_deceleration,
+    rollout_independent_axis_braking,
+    rollout_sliding_deceleration,
+    sliding_deceleration_approx_model,
+    sliding_deceleration_coulomb_fixed_axis,
+    sliding_deceleration_coulomb_velocity_axis,
+)
 
 
 DEFAULT_CONFIG = Path(__file__).with_name("fieldset_config.json")
+STRATEGIES = (
+    "sliding_coulomb_fixed_axis",
+    "sliding_coulomb_velocity_axis",
+    "sliding_approx",
+    "independent_axis",
+    "discrete_empirical",
+)
+STRATEGY_FILENAME_LABELS = {
+    "sliding_coulomb_fixed_axis": "fixed_axis",
+    "sliding_coulomb_velocity_axis": "velocity_axis",
+    "sliding_approx": "approx",
+    "independent_axis": "independent",
+    "discrete_empirical": "empirical",
+}
 
 
 def load_config(path):
@@ -113,16 +135,9 @@ def integrate_response_delay(initial_velocity, duration, dt):
     return poses
 
 
-def rollout_with_response_delay(initial_velocity, wheel_braking_deceleration, params, delay, dt, max_time):
-    """Hold velocity during response delay, then append a sliding-model braking rollout."""
+def append_response_delay(initial_velocity, braking_poses, delay, dt):
+    """Hold velocity during response delay, then append braking poses."""
     response_poses = integrate_response_delay(initial_velocity, delay, dt)
-    braking_poses, _, stop_time, stopped = rollout_sliding_deceleration(
-        initial_velocity,
-        wheel_braking_deceleration=wheel_braking_deceleration,
-        params=params,
-        dt=dt,
-        max_time=max_time,
-    )
     x, y, yaw = response_poses[-1]
     c = np.cos(yaw)
     s = np.sin(yaw)
@@ -130,7 +145,58 @@ def rollout_with_response_delay(initial_velocity, wheel_braking_deceleration, pa
     shifted_braking[:, 0] = x + c * braking_poses[:, 0] - s * braking_poses[:, 1]
     shifted_braking[:, 1] = y + s * braking_poses[:, 0] + c * braking_poses[:, 1]
     shifted_braking[:, 2] += yaw
-    return np.vstack((response_poses, shifted_braking[1:])), stop_time, stopped
+    return np.vstack((response_poses, shifted_braking[1:]))
+
+
+def strategy_rollout(initial_velocity, robot_revision, generator_params, params, delay, dt, max_time, strategy):
+    """Run one named braking strategy and return poses, stop status, and wheel braking."""
+    brake = robot_revision["brake_deceleration"]
+    body_x_braking = abs(float(brake["x"]))
+    if strategy == "independent_axis":
+        brake_deceleration = np.abs([float(brake[axis]) for axis in ("x", "y", "yaw")])
+        braking_poses, braking_velocities = rollout_independent_axis_braking(
+            initial_velocity, brake_deceleration, dt
+        )
+        stop_time = (len(braking_velocities) - 1) * dt
+        stopped = True
+        wheel_braking = None
+    elif strategy == "sliding_approx":
+        wheel_braking = individual_wheel_braking_deceleration(body_x_braking, params=params, model="approx")
+        braking_poses, _, stop_time, stopped = rollout_sliding_deceleration(
+            initial_velocity, wheel_braking, params=params, dt=dt, max_time=max_time,
+            deceleration_fn=sliding_deceleration_approx_model,
+        )
+    elif strategy == "sliding_coulomb_velocity_axis":
+        wheel_braking = individual_wheel_braking_deceleration(
+            body_x_braking, params=params, model="velocity_axis"
+        )
+        braking_poses, _, stop_time, stopped = rollout_sliding_deceleration(
+            initial_velocity, wheel_braking, params=params, dt=dt, max_time=max_time,
+            deceleration_fn=sliding_deceleration_coulomb_velocity_axis,
+        )
+    elif strategy == "sliding_coulomb_fixed_axis":
+        wheel_braking = individual_wheel_braking_deceleration(body_x_braking, params=params)
+        braking_poses, _, stop_time, stopped = rollout_sliding_deceleration(
+            initial_velocity, wheel_braking, params=params, dt=dt, max_time=max_time,
+            deceleration_fn=sliding_deceleration_coulomb_fixed_axis,
+        )
+    elif strategy == "discrete_empirical":
+        wheel_braking = None
+        diagonal_braking = float(generator_params.get("diagonal_body_deceleration", body_x_braking))
+        angle_width = float(generator_params.get("diagonal_angle_half_width_degrees", 22.5))
+        braking_poses, _, stop_time, stopped = rollout_discrete_empirical_deceleration(
+            initial_velocity,
+            cardinal_body_deceleration=body_x_braking,
+            diagonal_body_deceleration=diagonal_braking,
+            diagonal_angle_half_width_degrees=angle_width,
+            params=params,
+            dt=dt,
+            max_time=max_time,
+        )
+    else:
+        raise ValueError(f"Unknown rollout strategy: {strategy}")
+    trajectory = append_response_delay(initial_velocity, braking_poses, delay, dt)
+    return trajectory, stop_time, stopped, wheel_braking
 
 
 def save_rollout_data(
@@ -139,13 +205,14 @@ def save_rollout_data(
     results,
     dt,
     delay,
+    strategy,
     field_name,
     wheel_braking,
     footprint,
     footprint_name,
 ):
     """Save variable-length pose histories as a compressed, padded NumPy archive."""
-    trajectories = [trajectory for trajectory, _, _ in results]
+    trajectories = [trajectory for trajectory, _, _, _ in results]
     lengths = np.array([trajectory.shape[0] for trajectory in trajectories], dtype=int)
     poses = np.full((len(trajectories), lengths.max(), 3), np.nan, dtype=float)
     for index, trajectory in enumerate(trajectories):
@@ -153,16 +220,16 @@ def save_rollout_data(
     np.savez_compressed(
         output_path,
         format_version=3,
-        model="sliding_kinodynamic",
+        model=strategy,
         field_name=field_name,
         initial_velocities=np.asarray(initial_velocities, dtype=float),
         poses=poses,
         lengths=lengths,
-        stop_times=np.asarray([stop_time for _, stop_time, _ in results], dtype=float),
-        stopped=np.asarray([stopped for _, _, stopped in results], dtype=bool),
+        stop_times=np.asarray([stop_time for _, stop_time, _, _ in results], dtype=float),
+        stopped=np.asarray([stopped for _, _, stopped, _ in results], dtype=bool),
         dt=float(dt),
         response_time=float(delay),
-        wheel_braking_deceleration=float(wheel_braking),
+        wheel_braking_deceleration=np.nan if wheel_braking is None else float(wheel_braking),
         footprint_vertices=np.asarray([footprint_corners(footprint, 0.0, 0.0, 0.0)]),
         footprint_names=np.asarray([footprint_name]),
         trajectory_footprint_indices=np.zeros(len(trajectories), dtype=int),
@@ -179,16 +246,19 @@ def plot_field_rollouts(
     max_time,
     output_path,
     data_output_path=None,
+    strategy="sliding_coulomb_fixed_axis",
 ):
-    """Render field boundary rollouts using the sliding mecanum braking model."""
+    """Render field boundary rollouts using the selected mecanum braking model."""
     params = MecanumPhysicsParams()
-    body_x_braking = abs(float(robot_revision["brake_deceleration"]["x"]))
-    wheel_braking = individual_wheel_braking_deceleration(body_x_braking, params=params)
     delay = response_time(robot_revision, generator_params)
     results = [
-        rollout_with_response_delay(velocity, wheel_braking, params, delay, dt, max_time)
+        strategy_rollout(
+            velocity, robot_revision, generator_params, params, delay, dt, max_time, strategy
+        )
         for velocity in boundary_velocities
     ]
+    wheel_braking_values = [result[3] for result in results if result[3] is not None]
+    wheel_braking = wheel_braking_values[0] if wheel_braking_values else None
     if data_output_path is not None:
         save_rollout_data(
             data_output_path,
@@ -196,6 +266,7 @@ def plot_field_rollouts(
             results,
             dt,
             delay,
+            strategy,
             field["name"],
             wheel_braking,
             footprint_for_field(robot_revision, field),
@@ -205,7 +276,7 @@ def plot_field_rollouts(
     footprint = footprint_for_field(robot_revision, field)
     figure, axis = plt.subplots(figsize=(10, 10))
     stopped_count = 0
-    for trajectory, _, stopped in results:
+    for trajectory, _, stopped, _ in results:
         stopped_count += int(stopped)
         color = "tab:red" if stopped else "tab:orange"
         axis.plot(trajectory[:, 0], trajectory[:, 1], color=color, linewidth=0.8, alpha=0.35)
@@ -253,6 +324,11 @@ def main():
     parser.add_argument("--dt", type=float, default=0.005, help="Integrator step [s].")
     parser.add_argument("--max-time", type=float, default=5.0, help="Maximum sliding-braking duration [s].")
     parser.add_argument(
+        "--strategy",
+        choices=STRATEGIES,
+        help="Braking strategy; defaults to generator_params.rollout_strategy or sliding_coulomb_fixed_axis.",
+    )
+    parser.add_argument(
         "--output-dir",
         type=Path,
         default=Path(__file__).with_name("rollout_output"),
@@ -278,6 +354,10 @@ def main():
         raise ValueError("dt must be positive")
     if args.max_time <= 0.0:
         raise ValueError("max-time must be positive")
+    strategy = args.strategy or config["generator_params"].get("rollout_strategy", "sliding_coulomb_fixed_axis")
+    if strategy not in STRATEGIES:
+        raise ValueError(f"Unknown rollout strategy: {strategy}")
+    strategy_label = STRATEGY_FILENAME_LABELS[strategy]
     params = MecanumPhysicsParams()
     model = Mecanum(params=params)
     max_wheel_velocity = args.max_wheel_velocity
@@ -308,9 +388,11 @@ def main():
         print(f"{field['name']} requested limits: vx {velocity_ranges[0]}, vy {velocity_ranges[1]}, omega {velocity_ranges[2]}")
         print(f"  truncated extents: vx [{vx_lo:.4f}, {vx_hi:.4f}], vy [{vy_lo:.4f}, {vy_hi:.4f}], omega [{omega_lo:.4f}, {omega_hi:.4f}]")
         print(f"  sampled {len(boundary_velocities)} kinematically feasible boundary velocities")
-        output_path = args.output_dir / f"{field['name']}_sliding_rollouts.png"
+        output_path = args.output_dir / f"{field['name']}_{strategy_label}_rollouts.png"
         data_output_path = (
-            args.data_output_dir / f"{field['name']}_sliding_rollouts.npz" if args.save_rollout_data else None
+            args.data_output_dir / f"{field['name']}_{strategy_label}_rollouts.npz"
+            if args.save_rollout_data
+            else None
         )
         count, delay, wheel_braking, stopped_count = plot_field_rollouts(
             config["robot_revision"],
@@ -322,10 +404,13 @@ def main():
             args.max_time,
             output_path,
             data_output_path,
+            strategy,
         )
+        wheel_message = f"{wheel_braking:.4f} m/s^2" if wheel_braking is not None else "n/a"
         print(
             f"{field['name']}: {count} rollouts, response delay {delay:.3f} s, "
-            f"wheel braking {wheel_braking:.4f} m/s^2, stopped {stopped_count}/{count} -> "
+            f"strategy {strategy}, wheel braking {wheel_message}, "
+            f"stopped {stopped_count}/{count} -> "
             f"{output_path}{f', {data_output_path}' if data_output_path is not None else ''}"
         )
 

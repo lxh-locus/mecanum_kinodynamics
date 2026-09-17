@@ -11,6 +11,13 @@ DEFAULT_BAREBONES_DIR = REPOSITORY_ROOT / "fieldset_generator_barebones" / "roll
 DEFAULT_REDUX_DIR = REPOSITORY_ROOT / "fieldset_generator_redux1" / "rollout_data"
 DEFAULT_OUTPUT_DIR = REPOSITORY_ROOT / "rollout_overlays"
 OVERLAY_SCRIPT = REPOSITORY_ROOT / "overlay_rollout_archives.py"
+REDUX_STRATEGY_LABELS = {
+    "sliding_coulomb_fixed_axis": "fixed_axis",
+    "sliding_coulomb_velocity_axis": "velocity_axis",
+    "sliding_approx": "approx",
+    "independent_axis": "independent",
+    "discrete_empirical": "empirical",
+}
 
 
 def archives_by_field(directory, suffix):
@@ -28,12 +35,47 @@ def main():
     parser = argparse.ArgumentParser(description="Batch overlay matched barebones and redux rollout archives.")
     parser.add_argument("--barebones-dir", type=Path, default=DEFAULT_BAREBONES_DIR)
     parser.add_argument("--redux-dir", type=Path, default=DEFAULT_REDUX_DIR)
+    parser.add_argument(
+        "--redux-strategy",
+        choices=tuple(REDUX_STRATEGY_LABELS),
+        help="Redux strategy archive to collate; auto-detects the only available strategy when omitted.",
+    )
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--dry-run", action="store_true", help="Print paired archives without rendering images.")
     args = parser.parse_args()
 
     barebones = archives_by_field(args.barebones_dir, "_rollouts.npz")
-    redux = archives_by_field(args.redux_dir, "_sliding_rollouts.npz")
+    strategy_labels = set(REDUX_STRATEGY_LABELS.values())
+    available_labels = {
+        label
+        for label in strategy_labels
+        if any(args.redux_dir.glob(f"*_{label}_rollouts.npz"))
+    }
+    if args.redux_strategy is None and len(available_labels) > 1:
+        available_strategies = sorted(
+            strategy for strategy, label in REDUX_STRATEGY_LABELS.items() if label in available_labels
+        )
+        raise ValueError(
+            "Multiple redux strategies are available: "
+            + ", ".join(available_strategies)
+            + ". Pick one with --redux-strategy <strategy>."
+        )
+    selected_strategy = args.redux_strategy
+    if selected_strategy is None and len(available_labels) == 1:
+        selected_label = next(iter(available_labels))
+        selected_strategy = next(
+            strategy for strategy, label in REDUX_STRATEGY_LABELS.items() if label == selected_label
+        )
+        print(f"Auto-detected redux strategy: {selected_strategy}")
+    if selected_strategy is None:
+        selected_strategy = "sliding_coulomb_fixed_axis"
+    strategy_label = REDUX_STRATEGY_LABELS[selected_strategy]
+    redux = archives_by_field(args.redux_dir, f"_{strategy_label}_rollouts.npz")
+    if not redux:
+        legacy_redux = archives_by_field(args.redux_dir, "_sliding_rollouts.npz")
+        if legacy_redux:
+            print("Using legacy redux archive names ending in '_sliding_rollouts.npz'.")
+            redux = legacy_redux
     common_fields = sorted(barebones.keys() & redux.keys())
     if not common_fields:
         raise ValueError("No matching barebones and redux rollout archives found")

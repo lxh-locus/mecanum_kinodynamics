@@ -9,6 +9,7 @@ from mecanum_sliding import (
     sliding_deceleration_coulomb_velocity_axis,
     sliding_deceleration_discrete_emperical,
     rollout_discrete_empirical_deceleration,
+    rollout_sliding_deceleration,
 )
 
 
@@ -24,6 +25,15 @@ def test_individual_wheel_braking_deceleration_calibrates_approx_model_body_x_li
     np.testing.assert_allclose(wheel_braking, 2.0)
 
     actual = sliding_deceleration_approx_model([1.0, 0.0, 0.0], wheel_braking)
+    np.testing.assert_allclose(actual, [-4.0, 0.0, 0.0], atol=1e-12)
+
+
+def test_individual_wheel_braking_deceleration_calibrates_velocity_axis_body_x_limit():
+    wheel_braking = individual_wheel_braking_deceleration(4.0, model="velocity_axis")
+
+    np.testing.assert_allclose(wheel_braking, 1.0)
+
+    actual = sliding_deceleration_coulomb_velocity_axis([1.0, 0.0, 0.0], wheel_braking)
     np.testing.assert_allclose(actual, [-4.0, 0.0, 0.0], atol=1e-12)
 
 
@@ -84,6 +94,26 @@ def test_sliding_deceleration_includes_yaw_moment_from_contact_forces():
     assert actual[0] == pytest.approx(0.0, abs=1e-12)
     assert actual[1] == pytest.approx(0.0, abs=1e-12)
     assert actual[2] < 0.0
+
+
+def test_rollout_preserves_straight_world_motion_without_external_acceleration():
+    initial_velocity = np.array([1.0, 0.0, 1.0])
+
+    def no_acceleration(_velocity, **_kwargs):
+        return np.zeros(3)
+
+    states, velocities, _, stopped = rollout_sliding_deceleration(
+        initial_velocity,
+        wheel_braking_deceleration=1.0,
+        dt=1e-4,
+        max_time=0.5,
+        deceleration_fn=no_acceleration,
+    )
+
+    assert not stopped
+    np.testing.assert_allclose(states[-1, :2], [0.5, 0.0], atol=2e-4)
+    np.testing.assert_allclose(states[-1, 2], 0.5, atol=1e-12)
+    np.testing.assert_allclose(velocities[-1], [np.cos(0.5), -np.sin(0.5), 1.0], atol=2e-4)
 
 
 def test_sliding_deceleration_rejects_invalid_inputs():

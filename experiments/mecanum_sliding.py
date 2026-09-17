@@ -30,23 +30,28 @@ def individual_wheel_braking_deceleration(
     - ``"approx"`` calibrates for ``sliding_deceleration_approx_model``, whose
       continuous alignment weighting contributes a squared ``roller_dir_x**2``
       body-x component per wheel.
+    - ``"velocity_axis"`` calibrates for
+      ``sliding_deceleration_coulomb_velocity_axis``, which brakes along each
+      wheel's contact direction rather than its roller axis, so every wheel
+      contributes its full value to body x.
 
     Args:
         max_body_x_deceleration: Positive total body-x deceleration in m/s^2.
         params: Physical model parameters containing the four body-frame roller
             directions. The current calibration assumes their layout is
             symmetric.
-        model: Which sliding model to calibrate for, ``"coulomb"`` or ``"approx"``.
+        model: Which sliding model to calibrate for, ``"coulomb"``, ``"approx"``,
+            or ``"velocity_axis"``.
     Returns:
         The equal axis-constrained braking deceleration for one wheel in m/s^2.
     Raises:
         ValueError: If ``max_body_x_deceleration`` is not positive or ``model``
-            is not ``"coulomb"`` or ``"approx"``.
+            is not ``"coulomb"``, ``"approx"``, or ``"velocity_axis"``.
     """
     if max_body_x_deceleration <= 0.0:
         raise ValueError("max_body_x_deceleration must be positive")
-    if model not in ("coulomb", "approx"):
-        raise ValueError("model must be 'coulomb' or 'approx'")
+    if model not in ("coulomb", "approx", "velocity_axis"):
+        raise ValueError("model must be 'coulomb', 'approx', or 'velocity_axis'")
     roller_directions = np.asarray(params.roller_directions, dtype=float)
     if roller_directions.shape != (4, 2):
         raise ValueError("params.roller_directions must have shape (4, 2)")
@@ -56,8 +61,10 @@ def individual_wheel_braking_deceleration(
     roller_directions /= roller_norms[:, np.newaxis]
     if model == "coulomb":
         body_x_gain = np.sum(np.abs(roller_directions[:, 0]))
-    else:
+    elif model == "approx":
         body_x_gain = np.sum(roller_directions[:, 0] ** 2)
+    else:
+        body_x_gain = float(len(roller_directions))
     return max_body_x_deceleration / body_x_gain
 
 
@@ -273,8 +280,9 @@ def sliding_deceleration_coulomb_velocity_axis(
 
     ``wheel_braking_deceleration`` is the axis-constrained braking value for
     one wheel, in acceleration units. Use
-    ``individual_wheel_braking_deceleration(..., model="coulomb")`` to obtain it
-    from a desired total body-x deceleration. This is still a reduced model: it
+    ``individual_wheel_braking_deceleration(..., model="velocity_axis")`` to
+    obtain it from a desired total body-x deceleration. This is still a reduced
+    model: it
     assumes equal load sharing, includes yaw moment only from the resolved
     contact forces, and uses a hard Coulomb-style sliding limit rather than a
     tire brush or measured slip-angle curve.
@@ -482,6 +490,11 @@ def rollout_sliding_deceleration(
             break
 
         acceleration = deceleration_fn(velocity, **deceleration_kwargs)
+        # Convert force-derived acceleration into the derivative of body-frame
+        # velocity by including the rotating-frame transport term.
+        body_frame_acceleration = acceleration.copy()
+        body_frame_acceleration[0] += velocity[2] * velocity[1]
+        body_frame_acceleration[1] -= velocity[2] * velocity[0]
         x, y, theta = states[-1]
         c = np.cos(theta)
         s = np.sin(theta)
@@ -498,7 +511,7 @@ def rollout_sliding_deceleration(
 
         velocity = _advance_body_velocity(
             velocity,
-            acceleration,
+            body_frame_acceleration,
             step,
             speed_tolerance=speed_tolerance,
             yaw_rate_tolerance=yaw_rate_tolerance,

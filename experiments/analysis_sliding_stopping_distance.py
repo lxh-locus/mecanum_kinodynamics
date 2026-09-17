@@ -45,38 +45,71 @@ except ImportError:
     )
 
 
-def plot_velocity_profiles(axis, strategies, dt):
-    """Draw vx/vy/omega vs time for every strategy."""
+def plot_global_velocity_profiles(axis, strategies, dt, params=None):
+    """Draw world-frame vx/vy/omega vs time for every strategy."""
     axis.axhline(0.0, color="0.7", linewidth=0.8)
     styles = (("vx", "-"), ("vy", "--"), ("\u03c9", ":"))
-    for label, color, _, velocities in strategies:
+    for label, color, states, velocities in strategies:
         times = np.arange(len(velocities)) * dt
+        headings = states[: len(velocities), 2]
+        cos_headings = np.cos(headings)
+        sin_headings = np.sin(headings)
+        global_velocities = np.column_stack(
+            [
+                cos_headings * velocities[:, 0] - sin_headings * velocities[:, 1],
+                sin_headings * velocities[:, 0] + cos_headings * velocities[:, 1],
+                velocities[:, 2],
+            ]
+        )
         for axis_index, (name, style) in enumerate(styles):
             axis.plot(
                 times,
-                velocities[:, axis_index],
+                global_velocities[:, axis_index],
                 color=color,
                 linestyle=style,
                 linewidth=1.4,
                 label=f"{label} {name}",
             )
-    axis.set_title("body velocity vs time", fontsize="medium")
+    power_axis = None
+    if params is not None:
+        power_axis = axis.twinx()
+        power_axis.axhline(0.0, color="0.7", linewidth=0.6, linestyle=":")
+        for label, color, _, velocities in strategies:
+            times = np.arange(len(velocities)) * dt
+            energy = 0.5 * params.body_mass * np.sum(velocities[:, :2] ** 2, axis=1) + 0.5 * params.body_yaw_inertia * velocities[:, 2] ** 2
+            power = np.gradient(energy, dt) if len(times) > 1 else np.zeros_like(energy)
+            power_axis.plot(
+                times,
+                power,
+                color=color,
+                linestyle="-.",
+                linewidth=1.6,
+                alpha=0.6,
+                label=f"{label} power",
+            )
+        power_axis.set_ylabel("power [W]")
+
+    axis.set_title("global velocity and power vs time" if params is not None else "global velocity vs time", fontsize="medium")
     axis.set_xlabel("time [s]")
-    axis.set_ylabel("vx, vy [m/s]   \u03c9 [rad/s]")
+    axis.set_ylabel("global vx, vy [m/s]   \u03c9 [rad/s]")
     axis.grid(True, alpha=0.25)
-    return axis.get_legend_handles_labels()
+    velocity_handles, velocity_labels = axis.get_legend_handles_labels()
+    if power_axis is None:
+        return velocity_handles, velocity_labels
+    power_handles, power_labels = power_axis.get_legend_handles_labels()
+    return velocity_handles + power_handles, velocity_labels + power_labels
 
 
-def plot_velocity_and_energy(axis, strategies, dt, params):
-    """Draw vx/vy/omega vs time, plus a twin-axis kinetic-energy power trace, for every strategy."""
+def plot_body_velocity_and_power(axis, strategies, dt, params):
+    """Draw body-frame velocity and kinetic-energy power for every strategy."""
     axis.axhline(0.0, color="0.7", linewidth=0.8)
     styles = (("vx", "-"), ("vy", "--"), ("\u03c9", ":"))
     for label, color, _, velocities in strategies:
         times = np.arange(len(velocities)) * dt
-        for axis_index, (name, style) in enumerate(styles):
+        for velocity_index, (name, style) in enumerate(styles):
             axis.plot(
                 times,
-                velocities[:, axis_index],
+                velocities[:, velocity_index],
                 color=color,
                 linestyle=style,
                 linewidth=1.4,
@@ -84,23 +117,21 @@ def plot_velocity_and_energy(axis, strategies, dt, params):
             )
     axis.set_title("body velocity and power vs time", fontsize="medium")
     axis.set_xlabel("time [s]")
-    axis.set_ylabel("vx, vy [m/s]   \u03c9 [rad/s]")
+    axis.set_ylabel("body vx, vy [m/s]   \u03c9 [rad/s]")
     axis.grid(True, alpha=0.25)
 
     power_axis = axis.twinx()
     power_axis.axhline(0.0, color="0.7", linewidth=0.6, linestyle=":")
     for label, color, _, velocities in strategies:
         times = np.arange(len(velocities)) * dt
-        # translational + rotational kinetic energy, using the same body model as the rollout
         energy = 0.5 * params.body_mass * np.sum(velocities[:, :2] ** 2, axis=1) + 0.5 * params.body_yaw_inertia * velocities[:, 2] ** 2
-        # power is the rate of change of kinetic energy (negative while braking dissipates it)
         power = np.gradient(energy, dt) if len(times) > 1 else np.zeros_like(energy)
         power_axis.plot(times, power, color=color, linestyle="-.", linewidth=1.6, alpha=0.6, label=f"{label} power")
     power_axis.set_ylabel("power [W]")
 
-    lines, labels = axis.get_legend_handles_labels()
-    power_lines, power_labels = power_axis.get_legend_handles_labels()
-    return lines + power_lines, labels + power_labels
+    velocity_handles, velocity_labels = axis.get_legend_handles_labels()
+    power_handles, power_labels = power_axis.get_legend_handles_labels()
+    return velocity_handles + power_handles, velocity_labels + power_labels
 
 
 def plot_contact_velocity_profiles(axes, strategies, dt, params):
@@ -374,7 +405,7 @@ def main():
     figure.suptitle(
         f"Braking Strategy Comparison: vx={args.vx:g} m/s, vy={args.vy:g} m/s, \u03c9={args.omega:g} rad/s"
     )
-    velocity_handles, velocity_labels = plot_velocity_profiles(velocity_axis, strategies, args.dt)
+    velocity_handles, velocity_labels = plot_global_velocity_profiles(velocity_axis, strategies, args.dt)
     path_handles, path_labels = plot_rollout_paths(path_axis, strategies, model.footprint, args.max_footprints)
     figure.legend(
         velocity_handles,
@@ -396,21 +427,33 @@ def main():
     )
     figure.tight_layout(rect=(0.0, 0.16, 1.0, 0.93))
 
-    energy_figure, energy_axis = plt.subplots(figsize=(8, 6))
+    energy_figure, (global_energy_axis, power_axis) = plt.subplots(1, 2, figsize=(14, 6))
     energy_figure.suptitle(
-        f"Velocity and Energy: vx={args.vx:g} m/s, vy={args.vy:g} m/s, \u03c9={args.omega:g} rad/s"
+        f"Global Velocity and Power: vx={args.vx:g} m/s, vy={args.vy:g} m/s, \u03c9={args.omega:g} rad/s"
     )
-    energy_handles, energy_labels = plot_velocity_and_energy(energy_axis, strategies, args.dt, params)
+    global_energy_handles, global_energy_labels = plot_global_velocity_profiles(
+        global_energy_axis, strategies, args.dt, params
+    )
+    power_handles, power_labels = plot_body_velocity_and_power(power_axis, strategies, args.dt, params)
     energy_figure.legend(
-        energy_handles,
-        energy_labels,
+        global_energy_handles,
+        global_energy_labels,
         loc="lower center",
-        bbox_to_anchor=(0.5, 0.01),
+        bbox_to_anchor=(0.25, 0.01),
         fontsize="x-small",
         ncol=3,
         frameon=False,
     )
-    energy_figure.tight_layout(rect=(0.0, 0.28, 1.0, 0.93))
+    energy_figure.legend(
+        power_handles,
+        power_labels,
+        loc="lower center",
+        bbox_to_anchor=(0.75, 0.01),
+        fontsize="small",
+        ncol=2,
+        frameon=False,
+    )
+    energy_figure.tight_layout(rect=(0.0, 0.16, 1.0, 0.93))
 
     contact_figure, contact_axes = plt.subplots(2, 2, figsize=(12, 8), sharex=True, sharey=True)
     contact_figure.suptitle(
