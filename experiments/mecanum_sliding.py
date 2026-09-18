@@ -18,19 +18,19 @@ except ImportError:
 def individual_wheel_braking_deceleration(
     max_body_x_deceleration,
     params: MecanumPhysicsParams = MecanumPhysicsParams(),
-    model="coulomb",
+    model="fixed-axis",
 ):
     """Convert a body-x deceleration limit to an individual-wheel value.
 
     The four roller axes are diagonal, and the required per-wheel calibration
     depends on which sliding model will consume the result:
-    - ``"coulomb"`` (default) calibrates for ``sliding_deceleration_coulomb_model``,
+    - ``"fixed-axis"`` (default) calibrates for ``sliding_deceleration_coulomb_fixed_axis``,
       whose hard per-wheel sign switch contributes a full ``|roller_dir_x|``
       body-x component per wheel.
     - ``"approx"`` calibrates for ``sliding_deceleration_approx_model``, whose
       continuous alignment weighting contributes a squared ``roller_dir_x**2``
       body-x component per wheel.
-    - ``"velocity_axis"`` calibrates for
+    - ``"velocity-axis"`` calibrates for
       ``sliding_deceleration_coulomb_velocity_axis``, which brakes along each
       wheel's contact direction rather than its roller axis, so every wheel
       contributes its full value to body x.
@@ -40,18 +40,18 @@ def individual_wheel_braking_deceleration(
         params: Physical model parameters containing the four body-frame roller
             directions. The current calibration assumes their layout is
             symmetric.
-        model: Which sliding model to calibrate for, ``"coulomb"``, ``"approx"``,
-            or ``"velocity_axis"``.
+        model: Which sliding model to calibrate for, ``"fixed-axis"``, ``"approx"``,
+            or ``"velocity-axis"``.
     Returns:
         The equal axis-constrained braking deceleration for one wheel in m/s^2.
     Raises:
         ValueError: If ``max_body_x_deceleration`` is not positive or ``model``
-            is not ``"coulomb"``, ``"approx"``, or ``"velocity_axis"``.
+            is not ``"fixed-axis"``, ``"approx"``, or ``"velocity-axis"``.
     """
     if max_body_x_deceleration <= 0.0:
         raise ValueError("max_body_x_deceleration must be positive")
-    if model not in ("coulomb", "approx", "velocity_axis"):
-        raise ValueError("model must be 'coulomb', 'approx', or 'velocity_axis'")
+    if model not in ("fixed-axis", "approx", "velocity-axis"):
+        raise ValueError("model must be 'fixed-axis', 'approx', or 'velocity-axis'")
     roller_directions = np.asarray(params.roller_directions, dtype=float)
     if roller_directions.shape != (4, 2):
         raise ValueError("params.roller_directions must have shape (4, 2)")
@@ -59,7 +59,7 @@ def individual_wheel_braking_deceleration(
     if np.any(roller_norms <= 0.0):
         raise ValueError("params.roller_directions must contain nonzero vectors")
     roller_directions /= roller_norms[:, np.newaxis]
-    if model == "coulomb":
+    if model == "fixed-axis":
         body_x_gain = np.sum(np.abs(roller_directions[:, 0]))
     elif model == "approx":
         body_x_gain = np.sum(roller_directions[:, 0] ** 2)
@@ -216,7 +216,7 @@ def sliding_deceleration_coulomb_fixed_axis(
 
     ``wheel_braking_deceleration`` is the axis-constrained braking value for
     one wheel, in acceleration units. Use
-    ``individual_wheel_braking_deceleration(..., model="coulomb")`` to obtain it
+    ``individual_wheel_braking_deceleration(..., model="fixed-axis")`` to obtain it
     from a desired total body-x deceleration. This is still a reduced model: it
     assumes equal load sharing, includes yaw moment only from the resolved
     contact forces, and uses a hard Coulomb-style sliding limit rather than a
@@ -280,7 +280,7 @@ def sliding_deceleration_coulomb_velocity_axis(
 
     ``wheel_braking_deceleration`` is the axis-constrained braking value for
     one wheel, in acceleration units. Use
-    ``individual_wheel_braking_deceleration(..., model="velocity_axis")`` to
+    ``individual_wheel_braking_deceleration(..., model="velocity-axis")`` to
     obtain it from a desired total body-x deceleration. This is still a reduced
     model: it
     assumes equal load sharing, includes yaw moment only from the resolved
@@ -439,7 +439,7 @@ def rollout_sliding_deceleration(
     Args:
         body_velocity: Initial ``[vx, vy, yaw_rate]`` body velocity.
         wheel_braking_deceleration: Per-wheel roller-axis braking deceleration,
-            calibrated via ``individual_wheel_braking_deceleration(..., model="coulomb")``.
+            calibrated via ``individual_wheel_braking_deceleration(..., model="fixed-axis")``.
         params: Mecanum physical parameters, or ``None`` for defaults.
         dt: Integration step in seconds.
         max_time: Maximum rollout duration in seconds.

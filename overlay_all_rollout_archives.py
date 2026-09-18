@@ -12,11 +12,11 @@ DEFAULT_REDUX_DIR = REPOSITORY_ROOT / "fieldset_generator_redux1" / "rollout_dat
 DEFAULT_OUTPUT_DIR = REPOSITORY_ROOT / "rollout_overlays"
 OVERLAY_SCRIPT = REPOSITORY_ROOT / "overlay_rollout_archives.py"
 REDUX_STRATEGY_LABELS = {
-    "sliding_coulomb_fixed_axis": "fixed_axis",
-    "sliding_coulomb_velocity_axis": "velocity_axis",
-    "sliding_approx": "approx",
-    "independent_axis": "independent",
-    "discrete_empirical": "empirical",
+    "sliding-coulomb-fixed-axis": "fixed-axis",
+    "sliding-coulomb-velocity-axis": "velocity-axis",
+    "sliding-coulomb-approx": "coulomb-approx",
+    "independent-axis": "independent-axis",
+    "discrete-empirical": "discrete-empirical",
 }
 
 
@@ -29,6 +29,13 @@ def archives_by_field(directory, suffix):
             raise ValueError(f"Duplicate archive for field '{field_name}' in {directory}")
         archives[field_name] = path
     return archives
+
+
+def strategy_archive_labels(strategy):
+    """Return the canonical archive label followed by its legacy spelling."""
+    label = REDUX_STRATEGY_LABELS[strategy]
+    legacy_label = label.replace("-", "_")
+    return (label,) if legacy_label == label else (label, legacy_label)
 
 
 def main():
@@ -45,32 +52,32 @@ def main():
     args = parser.parse_args()
 
     barebones = archives_by_field(args.barebones_dir, "_rollouts.npz")
-    strategy_labels = set(REDUX_STRATEGY_LABELS.values())
-    available_labels = {
-        label
-        for label in strategy_labels
-        if any(args.redux_dir.glob(f"*_{label}_rollouts.npz"))
-    }
-    if args.redux_strategy is None and len(available_labels) > 1:
-        available_strategies = sorted(
-            strategy for strategy, label in REDUX_STRATEGY_LABELS.items() if label in available_labels
+    available_strategies = {
+        strategy
+        for strategy in REDUX_STRATEGY_LABELS
+        if any(
+            args.redux_dir.glob(f"*_{label}_rollouts.npz")
+            for label in strategy_archive_labels(strategy)
         )
+    }
+    if args.redux_strategy is None and len(available_strategies) > 1:
+        available_strategies = sorted(available_strategies)
         raise ValueError(
             "Multiple redux strategies are available: "
             + ", ".join(available_strategies)
             + ". Pick one with --redux-strategy <strategy>."
         )
     selected_strategy = args.redux_strategy
-    if selected_strategy is None and len(available_labels) == 1:
-        selected_label = next(iter(available_labels))
-        selected_strategy = next(
-            strategy for strategy, label in REDUX_STRATEGY_LABELS.items() if label == selected_label
-        )
+    if selected_strategy is None and len(available_strategies) == 1:
+        selected_strategy = next(iter(available_strategies))
         print(f"Auto-detected redux strategy: {selected_strategy}")
     if selected_strategy is None:
-        selected_strategy = "sliding_coulomb_fixed_axis"
-    strategy_label = REDUX_STRATEGY_LABELS[selected_strategy]
-    redux = archives_by_field(args.redux_dir, f"_{strategy_label}_rollouts.npz")
+        selected_strategy = "sliding-coulomb-fixed-axis"
+    redux = {}
+    for strategy_label in strategy_archive_labels(selected_strategy):
+        redux = archives_by_field(args.redux_dir, f"_{strategy_label}_rollouts.npz")
+        if redux:
+            break
     if not redux:
         legacy_redux = archives_by_field(args.redux_dir, "_sliding_rollouts.npz")
         if legacy_redux:

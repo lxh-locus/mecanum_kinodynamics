@@ -42,18 +42,18 @@ from experiments.mecanum_sliding import (
 
 DEFAULT_CONFIG = Path(__file__).with_name("fieldset_config.json")
 STRATEGIES = (
-    "sliding_coulomb_fixed_axis",
-    "sliding_coulomb_velocity_axis",
-    "sliding_approx",
-    "independent_axis",
-    "discrete_empirical",
+    "sliding-coulomb-fixed-axis",
+    "sliding-coulomb-velocity-axis",
+    "sliding-coulomb-approx",
+    "independent-axis",
+    "discrete-empirical",
 )
 STRATEGY_FILENAME_LABELS = {
-    "sliding_coulomb_fixed_axis": "fixed_axis",
-    "sliding_coulomb_velocity_axis": "velocity_axis",
-    "sliding_approx": "approx",
-    "independent_axis": "independent",
-    "discrete_empirical": "empirical",
+    "sliding-coulomb-fixed-axis": "fixed-axis",
+    "sliding-coulomb-velocity-axis": "velocity-axis",
+    "sliding-coulomb-approx": "coulomb-approx",
+    "independent-axis": "independent-axis",
+    "discrete-empirical": "discrete-empirical",
 }
 
 
@@ -152,7 +152,7 @@ def strategy_rollout(initial_velocity, robot_revision, generator_params, params,
     """Run one named braking strategy and return poses, stop status, and wheel braking."""
     brake = robot_revision["brake_deceleration"]
     body_x_braking = abs(float(brake["x"]))
-    if strategy == "independent_axis":
+    if strategy == "independent-axis":
         brake_deceleration = np.abs([float(brake[axis]) for axis in ("x", "y", "yaw")])
         braking_poses, braking_velocities = rollout_independent_axis_braking(
             initial_velocity, brake_deceleration, dt
@@ -160,27 +160,27 @@ def strategy_rollout(initial_velocity, robot_revision, generator_params, params,
         stop_time = (len(braking_velocities) - 1) * dt
         stopped = True
         wheel_braking = None
-    elif strategy == "sliding_approx":
+    elif strategy == "sliding-coulomb-approx":
         wheel_braking = individual_wheel_braking_deceleration(body_x_braking, params=params, model="approx")
         braking_poses, _, stop_time, stopped = rollout_sliding_deceleration(
             initial_velocity, wheel_braking, params=params, dt=dt, max_time=max_time,
             deceleration_fn=sliding_deceleration_approx_model,
         )
-    elif strategy == "sliding_coulomb_velocity_axis":
+    elif strategy == "sliding-coulomb-velocity-axis":
         wheel_braking = individual_wheel_braking_deceleration(
-            body_x_braking, params=params, model="velocity_axis"
+            body_x_braking, params=params, model="velocity-axis"
         )
         braking_poses, _, stop_time, stopped = rollout_sliding_deceleration(
             initial_velocity, wheel_braking, params=params, dt=dt, max_time=max_time,
             deceleration_fn=sliding_deceleration_coulomb_velocity_axis,
         )
-    elif strategy == "sliding_coulomb_fixed_axis":
-        wheel_braking = individual_wheel_braking_deceleration(body_x_braking, params=params)
+    elif strategy == "sliding-coulomb-fixed-axis":
+        wheel_braking = individual_wheel_braking_deceleration(body_x_braking, params=params, model="fixed-axis")
         braking_poses, _, stop_time, stopped = rollout_sliding_deceleration(
             initial_velocity, wheel_braking, params=params, dt=dt, max_time=max_time,
             deceleration_fn=sliding_deceleration_coulomb_fixed_axis,
         )
-    elif strategy == "discrete_empirical":
+    elif strategy == "discrete-empirical":
         wheel_braking = None
         diagonal_braking = float(generator_params.get("diagonal_body_deceleration", body_x_braking))
         angle_width = float(generator_params.get("diagonal_angle_half_width_degrees", 22.5))
@@ -246,7 +246,7 @@ def plot_field_rollouts(
     max_time,
     output_path,
     data_output_path=None,
-    strategy="sliding_coulomb_fixed_axis",
+    strategy="sliding-coulomb-fixed-axis",
 ):
     """Render field boundary rollouts using the selected mecanum braking model."""
     params = MecanumPhysicsParams()
@@ -326,7 +326,7 @@ def main():
     parser.add_argument(
         "--strategy",
         choices=STRATEGIES,
-        help="Braking strategy; defaults to generator_params.rollout_strategy or sliding_coulomb_fixed_axis.",
+        help="Braking strategy; defaults to generator_params.rollout_strategy or sliding-coulomb-fixed-axis.",
     )
     parser.add_argument(
         "--output-dir",
@@ -354,7 +354,7 @@ def main():
         raise ValueError("dt must be positive")
     if args.max_time <= 0.0:
         raise ValueError("max-time must be positive")
-    strategy = args.strategy or config["generator_params"].get("rollout_strategy", "sliding_coulomb_fixed_axis")
+    strategy = args.strategy or config["generator_params"].get("rollout_strategy", "sliding-coulomb-fixed-axis")
     if strategy not in STRATEGIES:
         raise ValueError(f"Unknown rollout strategy: {strategy}")
     strategy_label = STRATEGY_FILENAME_LABELS[strategy]

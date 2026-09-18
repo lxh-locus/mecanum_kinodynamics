@@ -43,13 +43,13 @@ def sample_boundary_velocities(params, max_wheel_velocity, angle_sweep, yaw_rate
 def sliding_methods(params, max_body_x_deceleration, diagonal_body_x_scale, diagonal_angle_half_width):
     """Return every ``sliding_*`` function and its calibrated arguments."""
     coulomb_wheel_braking = individual_wheel_braking_deceleration(
-        max_body_x_deceleration, params=params
+        max_body_x_deceleration, params=params, model="fixed-axis"
     )
     approx_wheel_braking = individual_wheel_braking_deceleration(
         max_body_x_deceleration, params=params, model="approx"
     )
     velocity_axis_wheel_braking = individual_wheel_braking_deceleration(
-        max_body_x_deceleration, params=params, model="velocity_axis"
+        max_body_x_deceleration, params=params, model="velocity-axis"
     )
     return (
         (

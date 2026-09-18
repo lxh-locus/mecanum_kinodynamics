@@ -29,7 +29,7 @@ def test_individual_wheel_braking_deceleration_calibrates_approx_model_body_x_li
 
 
 def test_individual_wheel_braking_deceleration_calibrates_velocity_axis_body_x_limit():
-    wheel_braking = individual_wheel_braking_deceleration(4.0, model="velocity_axis")
+    wheel_braking = individual_wheel_braking_deceleration(4.0, model="velocity-axis")
 
     np.testing.assert_allclose(wheel_braking, 1.0)
 
