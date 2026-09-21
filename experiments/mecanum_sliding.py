@@ -61,12 +61,26 @@ def individual_wheel_braking_deceleration(
     roller_directions /= roller_norms[:, np.newaxis]
     if model == "fixed-axis":
         body_x_gain = np.sum(np.abs(roller_directions[:, 0]))
-    elif model == "approx":
-        body_x_gain = np.sum(roller_directions[:, 0] ** 2)
     else:
         body_x_gain = float(len(roller_directions))
     return max_body_x_deceleration / body_x_gain
 
+
+def _bump_function_constructor(interval_start, interval_end):
+    """Create a bump function on the interval that takes in a single value,
+    assumes no input is zero
+    """
+    def bump_func(x):
+        y = (x - interval_start)/(interval_end - interval_start)
+        if y <= 0:
+            return 0
+        elif y >= 1:
+            return 1
+        f = np.exp(-1/y)
+        f2 = np.exp(-1/(1-y))
+        return f/(f+f2)
+
+    return bump_func
 
 def _sliding_contact_data(body_velocity, params, tolerance):
     """Build normalized roller and contact-velocity data for sliding models.
@@ -215,11 +229,10 @@ def sliding_deceleration_approx_model(
     # blends braking smoothly across body x/y as heading rotates; a wheel
     # whose contact velocity is perpendicular to its roller axis naturally
     # contributes zero, since its projection is already zero.
-    print(f"For these inputs: {body_velocity} and {wheel_braking_deceleration}")
-    axis_acceleration = -wheel_braking_deceleration * np.abs(rolling_projection)
-    print(f"We get axis_acceleration: {axis_acceleration} (from rolling_projection {rolling_projection})")
+    bump_func = _bump_function_constructor(0, np.sin(10*np.pi/180)) # Interval for full slip
+    bump_func_eval = np.array([0 if x <= 0 else bump_func(x) for x in np.abs(rolling_projection) ])
+    axis_acceleration = -wheel_braking_deceleration * bump_func_eval
     contact_accelerations = axis_acceleration[:, np.newaxis] * contact_directions #roller_directions
-    print(f"We get contact_accelerations:\n{contact_accelerations}\n(from contact_directions\n{contact_directions})")
     return _body_acceleration_from_contacts(contact_accelerations, wheel_positions, params)
 
 
