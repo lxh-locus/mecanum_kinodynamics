@@ -162,9 +162,15 @@ def strategy_rollout(initial_velocity, robot_revision, generator_params, params,
         wheel_braking = None
     elif strategy == "sliding-coulomb-approx":
         wheel_braking = individual_wheel_braking_deceleration(body_x_braking, params=params, model="approx")
+        angle_width = float(generator_params.get("diagonal_angle_half_width_degrees", 10.0))
         braking_poses, _, stop_time, stopped = rollout_sliding_deceleration(
             initial_velocity, wheel_braking, params=params, dt=dt, max_time=max_time,
             deceleration_fn=sliding_deceleration_approx_model,
+            deceleration_kwargs={
+                "wheel_braking_deceleration": wheel_braking,
+                "params": params,
+                "diagonal_angle_half_width_degrees": angle_width,
+            },
         )
     elif strategy == "sliding-coulomb-velocity-axis":
         wheel_braking = individual_wheel_braking_deceleration(

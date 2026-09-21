@@ -19,7 +19,7 @@ import sys
 
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.patches import Polygon
+from matplotlib.patches import Polygon, Rectangle
 
 try:
     from .mecanum_common import Mecanum
@@ -200,6 +200,112 @@ def plot_contact_velocity_profiles(axes, strategies, dt, params):
     return magnitude_handles + angle_handles, magnitude_labels + angle_labels
 
 
+def plot_roller_positions_and_contact_velocities(
+    axes,
+    strategies,
+    params,
+    max_steps=40,
+    roller_length=0.1,
+    roller_width=0.025,
+):
+    """Draw sampled roller poses and contact velocities in the global frame.
+
+    The four panels show the rollers in front-left, front-right, rear-left,
+    rear-right order. For every strategy, the roller pose and contact velocity
+    are drawn at sampled rollout timesteps. Contact velocities are transformed
+    from the body frame into the global inertial frame using each state's yaw.
+    """
+    if max_steps < 1:
+        raise ValueError("max_steps must be at least one")
+    if roller_length <= 0.0 or roller_width <= 0.0:
+        raise ValueError("roller_length and roller_width must be positive")
+    if axes.size != 4:
+        raise ValueError("axes must contain four subplot axes")
+
+    wheel_positions = np.array(
+        [
+            [params.wb_hlength, params.wb_hwidth],
+            [params.wb_hlength, -params.wb_hwidth],
+            [-params.wb_hlength, params.wb_hwidth],
+            [-params.wb_hlength, -params.wb_hwidth],
+        ],
+        dtype=float,
+    )
+    wheel_names = ("front-left", "front-right", "rear-left", "rear-right")
+    contact_velocity_scale = 0.25
+    for strategy_index, (label, color, states, velocities) in enumerate(strategies):
+        for axis in axes.flat:
+            axis.plot(
+                states[:, 0],
+                states[:, 1],
+                color=color,
+                linewidth=1.8,
+                alpha=0.3,
+                zorder=0,
+            )
+        stride = max(1, len(states) // max_steps)
+        for sample_index in range(0, len(states), stride):
+            pose = np.asarray(states[sample_index], dtype=float)
+            velocity = np.asarray(velocities[min(sample_index, len(velocities) - 1)], dtype=float)
+            cosine = np.cos(pose[2])
+            sine = np.sin(pose[2])
+            body_to_global = np.array([[cosine, -sine], [sine, cosine]])
+            global_wheel_positions = wheel_positions @ body_to_global.T + pose[:2]
+            body_contact_velocities = np.column_stack(
+                [
+                    velocity[0] - velocity[2] * wheel_positions[:, 1],
+                    velocity[1] + velocity[2] * wheel_positions[:, 0],
+                ]
+            )
+            global_contact_velocities = body_contact_velocities @ body_to_global.T
+
+            for wheel_index, axis in enumerate(axes.flat):
+                wheel_x, wheel_y = global_wheel_positions[wheel_index]
+                body_roller_direction = np.asarray(params.roller_directions[wheel_index], dtype=float)
+                body_roller_direction /= np.linalg.norm(body_roller_direction)
+                roller_direction = body_roller_direction @ body_to_global.T
+                roller_angle = np.degrees(np.arctan2(roller_direction[1], roller_direction[0]))
+                axis.add_patch(
+                    Rectangle(
+                        (wheel_x - roller_length / 2.0, wheel_y - roller_width / 2.0),
+                        roller_length,
+                        roller_width,
+                        angle=roller_angle,
+                        rotation_point="center",
+                        fill=False,
+                        edgecolor=color,
+                        linewidth=0.6,
+                        alpha=0.35,
+                        label="roller" if strategy_index == 0 and sample_index == 0 and wheel_index == 0 else "",
+                    )
+                )
+                contact_velocity = global_contact_velocities[wheel_index]
+                contact_speed = np.linalg.norm(contact_velocity)
+                line_length = min(contact_velocity_scale * contact_speed, roller_width)
+                contact_direction = (
+                    contact_velocity / contact_speed if contact_speed > 0.0 else np.zeros(2)
+                )
+                line_end = np.array([wheel_x, wheel_y]) + line_length * contact_direction
+                axis.plot(
+                    [wheel_x, line_end[0]],
+                    [wheel_y, line_end[1]],
+                    color=color,
+                    linewidth=1.0,
+                    zorder=3,
+                    label=label if wheel_index == 0 and sample_index == 0 else "",
+                )
+                axis.plot(wheel_x, wheel_y, ".", color=color, markersize=3)
+
+    for axis, wheel_name in zip(axes.flat, wheel_names):
+        axis.set_title(wheel_name, fontsize="medium")
+        axis.set_xlabel("global x [m]")
+        axis.set_ylabel("global y [m]")
+        axis.set_aspect("equal", adjustable="datalim")
+        axis.grid(True, alpha=0.25)
+
+    return axes.flat[0].get_legend_handles_labels()
+
+
 def plot_rollout_paths(axis, strategies, footprint, max_footprints):
     """Draw each strategy's path with swept footprints and a shared start footprint."""
     for label, color, states, _ in strategies:
@@ -363,7 +469,7 @@ def main():
 
     if "sliding-coulomb-velocity-axis" in selected:
         wheel_braking_deceleration = individual_wheel_braking_deceleration(
-            args.max_body_x_deceleration, params=params
+            args.max_body_x_deceleration, params=params, model="velocity-axis"
         )
         velocity_axis_states, velocity_axis_velocities, velocity_axis_stop_time, velocity_axis_stopped = (
             rollout_sliding_deceleration(
@@ -399,6 +505,11 @@ def main():
             dt=args.dt,
             max_time=args.max_time,
             deceleration_fn=sliding_deceleration_approx_model,
+            deceleration_kwargs={
+                "wheel_braking_deceleration": approx_wheel_braking_deceleration,
+                "params": params,
+                "diagonal_angle_half_width_degrees": args.diagonal_angle_half_width_degrees,
+            },
         )
         print(f"sliding roller friction (approx): stop_time={approx_stop_time:.3f} s, stopped={approx_stopped}")
         strategies.append(("sliding roller friction (approx)", "tab:purple", approx_states, approx_velocities))
@@ -486,6 +597,25 @@ def main():
         frameon=False,
     )
     contact_figure.tight_layout(rect=(0.0, 0.12, 1.0, 0.93))
+
+    roller_figure, roller_axes = plt.subplots(2, 2, figsize=(12, 8))
+    roller_figure.suptitle(
+        f"Rollout Roller Positions and Contact Velocities: vx={args.vx:g} m/s, "
+        f"vy={args.vy:g} m/s, \u03c9={args.omega:g} rad/s"
+    )
+    roller_handles, roller_labels = plot_roller_positions_and_contact_velocities(
+        roller_axes, strategies, params, max_steps=args.max_footprints
+    )
+    roller_figure.legend(
+        roller_handles,
+        roller_labels,
+        loc="lower center",
+        bbox_to_anchor=(0.5, 0.01),
+        fontsize="small",
+        ncol=2,
+        frameon=False,
+    )
+    roller_figure.tight_layout(rect=(0.0, 0.08, 1.0, 0.93))
 
     plt.show()
 

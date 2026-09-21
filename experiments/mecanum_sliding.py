@@ -178,6 +178,7 @@ def sliding_deceleration_approx_model(
     body_velocity,
     wheel_braking_deceleration,
     params: MecanumPhysicsParams = MecanumPhysicsParams(),
+    diagonal_angle_half_width_degrees=10.0,
     tolerance=1e-9,
 ):
     """Generate a planar deceleration using a roller friction-circle model.
@@ -209,6 +210,8 @@ def sliding_deceleration_approx_model(
             deceleration for one wheel in m/s^2.
         params: Physical model parameters used for wheel locations, body mass,
             and yaw inertia.
+        diagonal_angle_half_width_degrees: Half-width of the full-slip region
+            around each roller axis, in degrees.
         tolerance: Absolute translational-speed threshold below which the
             returned deceleration is treated as zero.
     Returns:
@@ -220,6 +223,8 @@ def sliding_deceleration_approx_model(
     """
     if wheel_braking_deceleration <= 0.0:
         raise ValueError("wheel_braking_deceleration must be positive")
+    if not (0.0 < diagonal_angle_half_width_degrees <= 90.0):
+        raise ValueError("diagonal_angle_half_width_degrees must be in (0, 90]")
     contact_data = _sliding_contact_data(body_velocity, params, tolerance)
     if contact_data is None:
         return np.zeros(3, dtype=float)
@@ -229,7 +234,9 @@ def sliding_deceleration_approx_model(
     # blends braking smoothly across body x/y as heading rotates; a wheel
     # whose contact velocity is perpendicular to its roller axis naturally
     # contributes zero, since its projection is already zero.
-    bump_func = _bump_function_constructor(0, np.sin(10*np.pi/180)) # Interval for full slip
+    bump_func = _bump_function_constructor(
+        0.0, np.sin(np.radians(diagonal_angle_half_width_degrees))
+    )
     bump_func_eval = np.array([0 if x <= 0 else bump_func(x) for x in np.abs(rolling_projection) ])
     axis_acceleration = -wheel_braking_deceleration * bump_func_eval
     contact_accelerations = axis_acceleration[:, np.newaxis] * contact_directions #roller_directions

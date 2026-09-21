@@ -55,7 +55,11 @@ def sliding_methods(params, max_body_x_deceleration, diagonal_body_x_scale, diag
         (
             "approx",
             sliding_deceleration_approx_model,
-            {"wheel_braking_deceleration": approx_wheel_braking, "params": params},
+            {
+                "wheel_braking_deceleration": approx_wheel_braking,
+                "params": params,
+                "diagonal_angle_half_width_degrees": diagonal_angle_half_width,
+            },
         ),
         (
             "coulomb fixed axis",
