@@ -69,7 +69,36 @@ def individual_wheel_braking_deceleration(
 
 
 def _sliding_contact_data(body_velocity, params, tolerance):
-    """Build normalized roller and contact-velocity data for sliding models."""
+    """Build normalized roller and contact-velocity data for sliding models.
+
+    Args:
+        body_velocity: Translational body velocity ``[vx, vy]`` or full planar
+            velocity ``[vx, vy, yaw_rate]``. The yaw rate contributes to each
+            wheel's local contact velocity when present.
+        params: Mecanum physical parameters containing wheel half-dimensions
+            and the four body-frame roller directions.
+        tolerance: Positive threshold used to identify negligible body and
+            wheel-contact velocities.
+    Returns:
+        ``None`` when both translational speed and yaw rate are within
+        ``tolerance``. Otherwise, a tuple
+        ``(wheel_positions, roller_directions, contact_directions,
+        rolling_projection)`` where each array has four rows, one per wheel:
+
+        - ``wheel_positions`` has shape ``(4, 2)`` and contains each wheel's
+          ``[x, y]`` body-frame position.
+        - ``roller_directions`` has shape ``(4, 2)`` and contains normalized
+          roller-axis directions.
+        - ``contact_directions`` has shape ``(4, 2)`` and contains normalized
+          contact-velocity directions, or ``[0, 0]`` for negligible contact
+          velocity.
+        - ``rolling_projection`` has shape ``(4,)`` and contains the clipped
+          dot product of each roller direction with its contact direction.
+    Raises:
+        ValueError: If ``body_velocity`` does not have shape ``(2,)`` or
+            ``(3,)``, ``tolerance`` is not positive, or the roller directions
+            do not have shape ``(4, 2)`` or contain a zero vector.
+    """
     velocity = np.asarray(body_velocity, dtype=float)
     if velocity.shape not in ((2,), (3,)):
         raise ValueError("body_velocity must have shape (2,) or (3,)")
@@ -186,8 +215,11 @@ def sliding_deceleration_approx_model(
     # blends braking smoothly across body x/y as heading rotates; a wheel
     # whose contact velocity is perpendicular to its roller axis naturally
     # contributes zero, since its projection is already zero.
-    axis_acceleration = -wheel_braking_deceleration * rolling_projection
-    contact_accelerations = axis_acceleration[:, np.newaxis] * roller_directions
+    print(f"For these inputs: {body_velocity} and {wheel_braking_deceleration}")
+    axis_acceleration = -wheel_braking_deceleration * np.abs(rolling_projection)
+    print(f"We get axis_acceleration: {axis_acceleration} (from rolling_projection {rolling_projection})")
+    contact_accelerations = axis_acceleration[:, np.newaxis] * contact_directions #roller_directions
+    print(f"We get contact_accelerations:\n{contact_accelerations}\n(from contact_directions\n{contact_directions})")
     return _body_acceleration_from_contacts(contact_accelerations, wheel_positions, params)
 
 
