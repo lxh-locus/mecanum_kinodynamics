@@ -34,6 +34,11 @@ ODOM_SUFFIXES = (
     "/odom/twist/twist/linear/y",
     "/odom/twist/twist/angular/z",
 )
+ODOM_POSE_SUFFIXES = (
+    "/odom/pose/pose/position/x",
+    "/odom/pose/pose/position/y",
+    "/odom/pose/pose/orientation/yaw_deg",
+)
 IMU_SUFFIXES = (
     "/imu/linear_acceleration/x",
     "/imu/linear_acceleration/y",
@@ -42,6 +47,8 @@ IMU_SUFFIXES = (
 BRAKE_ENGAGED_SUFFIX = "/brake_engaged/data"
 ODOM_COLOR = "tab:blue"
 IMU_COLOR = "tab:red"
+KALMAN_Q = np.diag([0.20**2, 0.20**2, 0.05**2])
+KALMAN_R = np.diag([0.10**2, 0.10**2, 0.05**2, 0.03**2])
 
 
 def _find_column(header, suffix):
@@ -49,6 +56,72 @@ def _find_column(header, suffix):
     if len(matches) != 1:
         raise ValueError(f"Expected exactly one column ending in '{suffix}', found {matches}")
     return matches[0]
+
+
+def fuse_imu_odom_velocity(imu_times, imu_values, odom_times, odom_twists):
+    """Fuse bias-corrected IMU acceleration/gyro with odom twist; return body velocities at IMU timestamps.
+
+    Odom is trusted at a constant KALMAN_R, so this does not yet down-weight odom during braking
+    or wheel slip.
+    """
+    imu_times = np.asarray(imu_times, dtype=float)
+    imu_values = np.asarray(imu_values, dtype=float)
+    odom_times = np.asarray(odom_times, dtype=float)
+    odom_twists = np.asarray(odom_twists, dtype=float)
+    if imu_times.ndim != 1 or odom_times.ndim != 1:
+        raise ValueError("imu_times and odom_times must be one-dimensional")
+    if imu_values.shape != (len(imu_times), 3):
+        raise ValueError("imu_values must have shape (len(imu_times), 3) for ax, ay, and gyro z")
+    if odom_twists.shape != (len(odom_times), 3):
+        raise ValueError("odom_twists must have shape (len(odom_times), 3) for vx, vy, and omega")
+    if len(imu_times) == 0 or len(odom_times) == 0:
+        raise ValueError("IMU and odom inputs must each contain at least one sample")
+    if np.any(np.diff(imu_times) <= 0.0) or np.any(np.diff(odom_times) <= 0.0):
+        raise ValueError("imu_times and odom_times must be strictly increasing")
+
+    odom_on_imu = np.column_stack(
+        [np.interp(imu_times, odom_times, odom_twists[:, index]) for index in range(3)]
+    )
+    observation_matrix = np.array(
+        [
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 0.0, 1.0],
+        ]
+    )
+    identity = np.eye(3)
+    state = odom_on_imu[0].copy()
+    covariance = KALMAN_R[:3, :3].copy()
+    fused = np.empty((len(imu_times), 3), dtype=float)
+
+    for index, timestamp in enumerate(imu_times):
+        if index:
+            dt = timestamp - imu_times[index - 1]
+            # An accelerometer reads proper acceleration, so body velocity obeys dv/dt = a - omega x v.
+            omega_input = imu_values[index - 1, 2]
+            transition = np.array(
+                [
+                    [1.0, omega_input * dt, 0.0],
+                    [-omega_input * dt, 1.0, 0.0],
+                    [0.0, 0.0, 1.0],
+                ]
+            )
+            state = transition @ state + np.array([*imu_values[index - 1, :2], 0.0]) * dt
+            covariance = transition @ covariance @ transition.T + KALMAN_Q * dt
+
+        measurement = np.array([*odom_on_imu[index], imu_values[index, 2]])
+        innovation = measurement - observation_matrix @ state
+        innovation_covariance = observation_matrix @ covariance @ observation_matrix.T + KALMAN_R
+        gain = np.linalg.solve(innovation_covariance, observation_matrix @ covariance).T
+        state += gain @ innovation
+        residual_transform = identity - gain @ observation_matrix
+        covariance = (
+            residual_transform @ covariance @ residual_transform.T + gain @ KALMAN_R @ gain.T
+        )
+        fused[index] = state
+
+    return fused
 
 
 def load_topic(path, suffixes, stamp_suffix):
@@ -282,9 +355,13 @@ def main():
         raise ValueError("time-window START must be less than STOP")
 
     odom_times, odom_twists = load_topic(args.csv, ODOM_SUFFIXES, "/odom/header/stamp")
+    odom_pose_times, odom_pose_values = load_topic(args.csv, ODOM_POSE_SUFFIXES, "/odom/header/stamp")
     imu_times, imu_values = load_topic(args.csv, IMU_SUFFIXES, "/imu/header/stamp")
     t0 = min(odom_times[0], imu_times[0])
     odom_times = odom_times - t0
+    odom_pose_times = odom_pose_times - t0
+    odom_pose_states = odom_pose_values.copy()
+    odom_pose_states[:, 2] = np.unwrap(np.radians(odom_pose_states[:, 2]))
     imu_times = imu_times - t0
 
     display_start = args.time_window[0] if args.time_window is not None else None
@@ -324,34 +401,56 @@ def main():
 
     if display_start is not None or display_stop is not None:
         odom_in = np.ones(len(odom_times), dtype=bool)
+        odom_pose_in = np.ones(len(odom_pose_times), dtype=bool)
         imu_in = np.ones(len(imu_times), dtype=bool)
         if display_start is not None:
             odom_in &= odom_times >= display_start
+            odom_pose_in &= odom_pose_times >= display_start
             imu_in &= imu_times >= display_start
         if display_stop is not None:
             odom_in &= odom_times <= display_stop
+            odom_pose_in &= odom_pose_times <= display_stop
             imu_in &= imu_times <= display_stop
-        if np.count_nonzero(odom_in) < 2 or np.count_nonzero(imu_in) < 2:
+        if (
+            np.count_nonzero(odom_in) < 2
+            or np.count_nonzero(odom_pose_in) < 2
+            or np.count_nonzero(imu_in) < 2
+        ):
             raise ValueError(
-                f"Selected rollout interval [{display_start}, {display_stop}] s needs at least two odom and two IMU samples"
+                f"Selected rollout interval [{display_start}, {display_stop}] s needs at least two odom, "
+                "odom-pose, and IMU samples"
             )
     else:
         odom_in = np.ones(len(odom_times), dtype=bool)
+        odom_pose_in = np.ones(len(odom_pose_times), dtype=bool)
         imu_in = np.ones(len(imu_times), dtype=bool)
 
     odom_states = integrate_body_twist(odom_times, odom_twists)
     imu_states, imu_twists = integrate_imu(imu_times, imu_values, imu_bias)
     odom_origin = state_at(odom_times, odom_states, brake_start) if brake_start is not None else None
     imu_origin = state_at(imu_times, imu_states, brake_start) if brake_start is not None else None
+    odom_pose_origin = (
+        state_at(odom_pose_times, odom_pose_states, brake_start) if brake_start is not None else None
+    )
     rollouts = [
         (
-            "odom",
+            "odom velocity integrated",
             ODOM_COLOR,
             odom_times[odom_in],
             odom_twists[odom_in],
             rebase_states(odom_states[odom_in], odom_origin),
         ),
         ("imu", IMU_COLOR, imu_times[imu_in], imu_twists[imu_in], rebase_states(imu_states[imu_in], imu_origin)),
+    ]
+    path_rollouts = [
+        *rollouts,
+        (
+            "odom position recorded",
+            "tab:green",
+            odom_pose_times[odom_pose_in],
+            np.zeros((np.count_nonzero(odom_pose_in), 3)),
+            rebase_states(odom_pose_states[odom_pose_in], odom_pose_origin),
+        ),
     ]
     for label, _, times, _, states in rollouts:
         print(
@@ -361,7 +460,7 @@ def main():
 
     fig, (velocity_axis, path_axis) = plt.subplots(1, 2, figsize=(15, 7))
     plot_body_velocities(velocity_axis, rollouts)
-    plot_rollout_paths(path_axis, rollouts, RobotFootprint(), args.footprint_stride)
+    plot_rollout_paths(path_axis, path_rollouts, RobotFootprint(), args.footprint_stride)
     fig.suptitle(args.csv.name)
     fig.tight_layout()
 
