@@ -329,7 +329,7 @@ The bump function is 0 at or below the lower endpoint and 1 at or above the
 upper endpoint, with a smooth transition inside. One form of a bump function is as follows:
 
 $$
-b(x) = \left( \frac{x-a}{b-a}\right)
+h(x) = g \left( \frac{x-a}{b-a}\right)
 $$
 where $a$ is the start of the interval, 0 in this case, and $b$ is the end, $\sin(\delta)$. $g(x)$ is:
 
@@ -347,7 +347,7 @@ $$
 Let $b(|p_i|)$ denote this weighting. The scalar axis braking response is:
 
 $$
- a_{axis,i} = -a_{wheel}\,b(|p_i|)
+ a_{axis,i} = -a_{wheel}\,h(|p_i|)
 $$
 
 The resulting contact acceleration is applied opposite the local contact
