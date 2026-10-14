@@ -184,3 +184,22 @@ def test_fuse_imu_odom_velocity_biascomp_uses_braking_mask_and_returns_velocitie
 
     assert default_result.shape == (len(times), 3)
     assert not np.allclose(with_braking, default_result)
+
+
+def test_plot_energy_analogs_weights_irregular_sample_intervals():
+    import matplotlib.pyplot as plt
+
+    from experiments.analysis_comparison import plot_energy_analogs
+
+    times = np.array([0.0, 0.1, 0.4])
+    twists = np.array([[1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
+    figure, axis = plt.subplots()
+    try:
+        power_axis = plot_energy_analogs(
+            axis, [("test", "black", times, twists, np.zeros((3, 3)))]
+        )
+
+        np.testing.assert_allclose(axis.lines[1].get_ydata(), [0.0, 0.25, 0.85])
+        np.testing.assert_allclose(power_axis.lines[0].get_ydata(), [1.0, 4.0, 0.0])
+    finally:
+        plt.close(figure)

@@ -481,6 +481,32 @@ def plot_rollout_paths(axis, rollouts, footprint, stride):
     axis.grid(True, alpha=0.25)
     axis.legend(loc="best", fontsize="small")
 
+def plot_energy_analogs(axis, rollouts):
+    power_axis = axis.twinx()
+    axis.axhline(0.0, color="0.7", linewidth=0.8)
+    legend_handles = []
+    legend_labels = []
+    for label, color, times, twists, _ in rollouts:
+        energy_rate = np.sum(twists**2, axis=1)
+        energy_proxy = np.concatenate(
+            [[0.0], np.cumsum(0.5 * (energy_rate[:-1] + energy_rate[1:]) * np.diff(times))]
+        )
+        energy_line = axis.plot(
+            times, energy_proxy, color=color, linewidth=1.4, label=f"{label} energy"
+        )[0]
+        power_line = power_axis.plot(
+            times, energy_rate, color=color, linestyle="--", linewidth=1.4, label=f"{label} power"
+        )[0]
+        legend_handles.extend([energy_line, power_line])
+        legend_labels.extend([f"{label} energy", f"{label} power"])
+    axis.set_title("Energy and power proxies vs time", fontsize="medium")
+    axis.set_xlabel("time [s]")
+    axis.set_ylabel(r"Cumulative energy lost analog [$\int |v|^2 dt$, mixed units]")
+    power_axis.set_ylabel(r"Power analog [$|v|^2$, mixed units]")
+    axis.grid(True, alpha=0.25)
+    axis.legend(legend_handles, legend_labels, loc="best", fontsize="small")
+    return power_axis
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -692,10 +718,18 @@ def main():
     fig.suptitle(args.csv.name)
     fig.tight_layout()
 
+    energy_figure, energy_axis = plt.subplots(figsize=(10, 6))
+    plot_energy_analogs(energy_axis, rollouts)
+    energy_figure.suptitle(args.csv.name)
+    energy_figure.tight_layout()
+
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(args.output, dpi=150, bbox_inches="tight")
         print(f"Saved {args.output}")
+        energy_output = args.output.with_name(f"{args.output.stem}_energy{args.output.suffix}")
+        energy_figure.savefig(energy_output, dpi=150, bbox_inches="tight")
+        print(f"Saved {energy_output}")
     else:
         plt.show()
 
