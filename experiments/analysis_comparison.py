@@ -49,8 +49,10 @@ BRAKE_ENGAGED_SUFFIX = "/brake_engaged/data"
 ODOM_COLOR = "tab:blue"
 IMU_COLOR = "tab:red"
 EKF_COLOR = "tab:orange"
-KALMAN_Q = np.diag([1**2, 1**2, 0.1**2])
-KALMAN_R = np.diag([0.010**2, 0.010**2, 0.005**2])
+KALMAN_Q = np.diag([.5**2, .5**2, 0.25**2])
+# Measurement order: odom vx, odom vy, odom omega, gyro z. The gyro entry is smaller so omega
+# leans on the gyro rather than on the wheels.
+KALMAN_R = np.diag([0.010**2, 0.010**2, 0.020**2, 0.002**2])
 
 
 def _find_column(header, suffix):
@@ -131,10 +133,9 @@ def fuse_imu_odom_velocity(imu_times, imu_values, odom_times, odom_twists, braki
     """Fuse bias-corrected IMU acceleration/gyro with odom twist; return body velocities at IMU timestamps.
 
     This is an extended kalman filter due to Corilis forces in the IMU.
-    `braking` is an optional boolean mask aligned with `imu_times`; it does not alter filter behavior.
-
-    Odom is trusted at a constant KALMAN_R, so this does not yet down-weight odom during braking
-    or wheel slip.
+    Odom twist and gyro z both measure omega; the last two KALMAN_R entries set their relative trust.
+    `braking` is an optional boolean mask aligned with `imu_times` that inflates the odom
+    measurement noise while leaving the gyro entry nominal.
     """
     imu_times = np.asarray(imu_times, dtype=float)
     imu_values = np.asarray(imu_values, dtype=float)
@@ -159,12 +160,27 @@ def fuse_imu_odom_velocity(imu_times, imu_values, odom_times, odom_twists, braki
         [np.interp(imu_times, odom_times, odom_twists[:, index]) for index in range(3)]
     )
     identity = np.eye(3)
-    # H
-    observation_matrix = identity.copy() # Inefficient, for debug purposes
+    # H maps [vx, vy, omega] onto [odom vx, odom vy, odom omega, gyro z].
+    observation_matrix = np.array(
+        [
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 0.0, 1.0],
+        ]
+    )
     # B input
     state = np.zeros(3)
     covariance = identity * 1e6
     fused = np.empty((len(imu_times), 3), dtype=float)
+
+    half_life_time = 0.02 # In seconds, for decaying covariance spike when braking occurs
+    tau = half_life_time/np.log(2)
+    # Alternate approach, a tau that converges to target_percent_remaining within target_time time
+    # target_time = 0.4
+    # target_percent_remaining = 1e-3
+    # tau = -target_time / np.log(target_percent_remaining)
+    once = True
 
     for index, timestamp in enumerate(imu_times):
         if index != 0: # skip the first time index, cuz we don't have prior data
@@ -185,15 +201,26 @@ def fuse_imu_odom_velocity(imu_times, imu_values, odom_times, odom_twists, braki
                     [0.0, 0.0, 0.0],
                 ]
             )
+            # Note the gyro state from the IMU is not propogated through
             state = state + dt * input_transform @ imu_values[index - 1, :]
 
             covariance = linearized_F @ covariance @ linearized_F.T + KALMAN_Q * dt # F * P * F.T + Q*dt # Check dt use
 
         if braking[index]:
-            kalman_R = np.diag([100**2, 100**2, 50**2])
+            if once:
+                kalman_R = np.diag([100**2, 100**2, 200**2, KALMAN_R[3, 3]])
+                once = False
+            else:
+                # A decay method that drops this back towards the nominal KALMAN_R
+                decay_a = np.exp(-dt/tau)
+                kalman_R = decay_a * kalman_R + (1 - decay_a) * KALMAN_R
+            # Wheel slip corrupts odom but not the gyro, so the gyro entry stays nominal.
+            # kalman_R = np.diag([100**2, 100**2, 200**2, KALMAN_R[3, 3]])
         else:
+            once = True
             kalman_R = KALMAN_R
-        innovation = odom_on_imu[index] - observation_matrix @ state
+        measurement = np.array([*odom_on_imu[index], imu_values[index, 2]])
+        innovation = measurement - observation_matrix @ state
         innovation_covariance = observation_matrix @ covariance @ observation_matrix.T + kalman_R
         gain = np.linalg.solve(innovation_covariance, observation_matrix @ covariance).T
         state += gain @ innovation
@@ -237,7 +264,7 @@ def fuse_imu_odom_velocity_biascomp(
     kalman_Q[:3, :3] = KALMAN_Q
     kalman_Q[3, 3] = 0.01**2
     kalman_Q[4, 4] = 0.01**2
-    kalman_R = KALMAN_R
+    kalman_R = KALMAN_R[:3, :3]  # odom-only measurement, so drop the gyro row
     odom_on_imu = np.column_stack(
         [np.interp(imu_times, odom_times, odom_twists[:, index]) for index in range(3)]
     )
@@ -635,6 +662,24 @@ def main():
             rebase_states(odom_pose_states[odom_pose_in], odom_pose_origin),
         ),
     ]
+    print("Body velocity entering the rollout:")
+    for label, times, twists, mask in (
+        ("odom", odom_times, odom_twists, odom_in),
+        ("imu", imu_times, imu_twists, imu_in),
+        ("imu EKF fused", imu_times, ekf_twists, imu_in),
+    ):
+        start = int(np.argmax(mask))
+        if start == 0:
+            print(f"  {label}: rollout starts at the first sample, so there is no earlier one")
+            continue
+        previous = start - 1
+        print(f"  {label}: dt={times[start] - times[previous]:.4f} s")
+        for moment, sample in (("before", previous), ("start ", start)):
+            print(
+                f"    {moment} t={times[sample]:.4f} s: vx={twists[sample, 0]:+.4f} m/s, "
+                f"vy={twists[sample, 1]:+.4f} m/s, omega={twists[sample, 2]:+.4f} rad/s"
+            )
+
     for label, _, times, _, states in rollouts:
         print(
             f"{label}: {len(times)} samples over {times[-1] - times[0]:.3f} s; final pose "

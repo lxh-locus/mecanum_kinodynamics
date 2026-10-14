@@ -81,7 +81,7 @@ def test_fuse_imu_odom_velocity_predicts_from_linear_acceleration():
 
 def test_active_fuse_imu_odom_velocity_initializes_from_first_odom_measurement():
     imu_times = np.array([0.0])
-    imu_values = np.zeros((1, 3))
+    imu_values = np.array([[0.0, 0.0, 0.2]])
     odom_twists = np.array([[0.6, -0.35, 0.2]])
 
     fused = fuse_imu_odom_velocity(imu_times, imu_values, imu_times, odom_twists)
@@ -144,6 +144,18 @@ def test_active_fuse_imu_odom_velocity_handles_lateral_velocity_during_turn():
     fused = fuse_imu_odom_velocity(times, imu_values, times, odom_twists)
 
     np.testing.assert_allclose(fused[-1], [vx, vy, omega], atol=1e-7)
+
+
+def test_active_fuse_imu_odom_velocity_weights_gyro_over_odom_for_omega():
+    times = np.arange(0.0, 1.0, 0.01)
+    imu_values = np.tile([0.0, 0.0, 1.0], (len(times), 1))
+    odom_twists = np.zeros((len(times), 3))
+
+    fused = fuse_imu_odom_velocity(times, imu_values, times, odom_twists)
+
+    expected = KALMAN_R[2, 2] / (KALMAN_R[2, 2] + KALMAN_R[3, 3])
+    assert fused[-1, 2] > 0.5
+    np.testing.assert_allclose(fused[-1, 2], expected, atol=0.02)
 
 
 def test_fuse_imu_odom_velocity_biascomp_estimates_constant_accelerometer_bias():
