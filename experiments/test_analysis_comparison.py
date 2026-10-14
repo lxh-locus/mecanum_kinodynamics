@@ -6,6 +6,7 @@ from experiments.analysis_comparison import (
     find_rising_edge,
     COPILOT_fuse_imu_odom_velocity,
     fuse_imu_odom_velocity,
+    fuse_imu_odom_velocity_biascomp,
     rebase_states,
     state_at,
 )
@@ -143,3 +144,31 @@ def test_active_fuse_imu_odom_velocity_handles_lateral_velocity_during_turn():
     fused = fuse_imu_odom_velocity(times, imu_values, times, odom_twists)
 
     np.testing.assert_allclose(fused[-1], [vx, vy, omega], atol=1e-7)
+
+
+def test_fuse_imu_odom_velocity_biascomp_estimates_constant_accelerometer_bias():
+    times = np.arange(0.0, 5.0, 0.01)
+    accel_bias = np.array([0.3, -0.2])
+    imu_values = np.tile([*accel_bias, 0.0], (len(times), 1))
+    odom_twists = np.zeros((len(times), 3))
+
+    fused, estimated_biases = fuse_imu_odom_velocity_biascomp(
+        times, imu_values, times, odom_twists, return_biases=True
+    )
+
+    np.testing.assert_allclose(estimated_biases[-1], accel_bias, atol=0.04)
+    np.testing.assert_allclose(fused[-1], np.zeros(3), atol=1e-5)
+
+
+def test_fuse_imu_odom_velocity_biascomp_uses_braking_mask_and_returns_velocities_by_default():
+    times = np.array([0.0, 0.01, 0.02])
+    imu_values = np.zeros((3, 3))
+    odom_twists = np.array([[0.3, -0.1, 0.0], [0.8, -0.1, 0.0], [0.8, -0.1, 0.0]])
+
+    default_result = fuse_imu_odom_velocity_biascomp(times, imu_values, times, odom_twists)
+    with_braking = fuse_imu_odom_velocity_biascomp(
+        times, imu_values, times, odom_twists, [False, True, True]
+    )
+
+    assert default_result.shape == (len(times), 3)
+    assert not np.allclose(with_braking, default_result)

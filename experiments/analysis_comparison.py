@@ -49,7 +49,7 @@ BRAKE_ENGAGED_SUFFIX = "/brake_engaged/data"
 ODOM_COLOR = "tab:blue"
 IMU_COLOR = "tab:red"
 EKF_COLOR = "tab:orange"
-KALMAN_Q = np.diag([1**2, 10**2, 0.1**2])
+KALMAN_Q = np.diag([1**2, 1**2, 0.1**2])
 KALMAN_R = np.diag([0.010**2, 0.010**2, 0.005**2])
 
 
@@ -203,6 +203,90 @@ def fuse_imu_odom_velocity(imu_times, imu_values, odom_times, odom_twists, braki
         )
         fused[index] = state
 
+    return fused
+
+
+def fuse_imu_odom_velocity_biascomp(
+    imu_times, imu_values, odom_times, odom_twists, braking=None, return_biases=False
+):
+    """Fuse IMU acceleration/gyro with odom twist and estimate accelerometer bias.
+
+    `imu_values` contains raw ax/ay and gyro-bias-corrected gyro z. Return body velocities
+    at IMU timestamps; with `return_biases`, also return the estimated [bax, bay] history.
+    `braking` is an optional boolean mask aligned with `imu_times` that changes odom measurement noise.
+    """
+    imu_times = np.asarray(imu_times, dtype=float)
+    imu_values = np.asarray(imu_values, dtype=float)
+    odom_times = np.asarray(odom_times, dtype=float)
+    odom_twists = np.asarray(odom_twists, dtype=float)
+    if imu_times.ndim != 1 or odom_times.ndim != 1:
+        raise ValueError("imu_times and odom_times must be one-dimensional")
+    if imu_values.shape != (len(imu_times), 3):
+        raise ValueError("imu_values must have shape (len(imu_times), 3) for ax, ay, and gyro z")
+    if odom_twists.shape != (len(odom_times), 3):
+        raise ValueError("odom_twists must have shape (len(odom_times), 3) for vx, vy, and omega")
+    if len(imu_times) == 0 or len(odom_times) == 0:
+        raise ValueError("IMU and odom inputs must each contain at least one sample")
+    if np.any(np.diff(imu_times) <= 0.0) or np.any(np.diff(odom_times) <= 0.0):
+        raise ValueError("imu_times and odom_times must be strictly increasing")
+    braking = np.zeros(len(imu_times), dtype=bool) if braking is None else np.asarray(braking, dtype=bool)
+    if braking.shape != (len(imu_times),):
+        raise ValueError("braking must have shape (len(imu_times),)")
+
+    kalman_Q = np.zeros((5, 5))
+    kalman_Q[:3, :3] = KALMAN_Q
+    kalman_Q[3, 3] = 0.01**2
+    kalman_Q[4, 4] = 0.01**2
+    kalman_R = KALMAN_R
+    odom_on_imu = np.column_stack(
+        [np.interp(imu_times, odom_times, odom_twists[:, index]) for index in range(3)]
+    )
+    identity = np.eye(5)
+    observation_matrix = np.zeros((3, 5))
+    observation_matrix[:, :3] = np.eye(3)
+    state = np.zeros(5)
+    bias_initial_variance = 10.0**2
+    covariance = np.diag([1e6, 1e6, 1e6, bias_initial_variance, bias_initial_variance])
+    fused = np.empty((len(imu_times), 3), dtype=float)
+    estimated_biases = np.empty((len(imu_times), 2), dtype=float)
+
+    for index, timestamp in enumerate(imu_times):
+        if index:
+            dt = timestamp - imu_times[index - 1]
+            omega_input = imu_values[index - 1, 2]
+            transition = np.array(
+                [
+                    [1.0, omega_input * dt, 0.0, -dt, 0.0],
+                    [-omega_input * dt, 1.0, 0.0, 0.0, -dt],
+                    [0.0, 0.0, 1.0, 0.0, 0.0],
+                    [0.0, 0.0, 0.0, 1.0, 0.0],
+                    [0.0, 0.0, 0.0, 0.0, 1.0],
+                ]
+            )
+            input_vector = np.array(
+                [imu_values[index - 1, 0], imu_values[index - 1, 1], 0.0, 0.0, 0.0]
+            )
+            state = transition @ state + input_vector * dt
+            covariance = transition @ covariance @ transition.T + kalman_Q * dt
+
+        if braking[index]:
+            measurement_noise = np.diag([100**2, 100**2, 50**2])
+        else:
+            measurement_noise = kalman_R
+        innovation = odom_on_imu[index] - observation_matrix @ state
+        innovation_covariance = observation_matrix @ covariance @ observation_matrix.T + measurement_noise
+        gain = np.linalg.solve(innovation_covariance, observation_matrix @ covariance).T
+        state += gain @ innovation
+        residual_transform = identity - gain @ observation_matrix
+        covariance = (
+            residual_transform @ covariance @ residual_transform.T
+            + gain @ measurement_noise @ gain.T
+        )
+        fused[index] = state[:3]
+        estimated_biases[index] = state[3:5]
+
+    if return_biases:
+        return fused, estimated_biases
     return fused
 
 
