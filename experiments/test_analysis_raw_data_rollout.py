@@ -1,6 +1,6 @@
 import numpy as np
 
-from experiments.analysis_comparison import (
+from experiments.analysis_raw_data_rollout import (
     KALMAN_Q,
     KALMAN_R,
     find_rising_edge,
@@ -189,7 +189,7 @@ def test_fuse_imu_odom_velocity_biascomp_uses_braking_mask_and_returns_velocitie
 def test_plot_energy_analogs_weights_irregular_sample_intervals():
     import matplotlib.pyplot as plt
 
-    from experiments.analysis_comparison import plot_energy_analogs
+    from experiments.analysis_raw_data_rollout import plot_energy_analogs
 
     times = np.array([0.0, 0.1, 0.4])
     twists = np.array([[1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 0.0, 0.0]])

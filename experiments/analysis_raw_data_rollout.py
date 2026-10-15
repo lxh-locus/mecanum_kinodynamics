@@ -547,6 +547,11 @@ def main():
     )
     parser.add_argument("--output", type=Path, help="Save the figure to this path instead of showing it.")
     parser.add_argument(
+        "--energy",
+        action="store_true",
+        help="Include the energy and power proxy graphs (default: off).",
+    )
+    parser.add_argument(
         "--time-window",
         nargs=2,
         type=float,
@@ -696,11 +701,13 @@ def main():
     ):
         start = int(np.argmax(mask))
         if start == 0:
-            print(f"  {label}: rollout starts at the first sample, so there is no earlier one")
-            continue
-        previous = start - 1
-        print(f"  {label}: dt={times[start] - times[previous]:.4f} s")
-        for moment, sample in (("before", previous), ("start ", start)):
+            print(f"  {label}: rollout starts at the first sample, so there is no earlier one for 'before'")
+            samples = (("start ", start),)
+        else:
+            previous = start - 1
+            print(f"  {label}: dt={times[start] - times[previous]:.4f} s")
+            samples = (("before", previous), ("start ", start))
+        for moment, sample in samples:
             print(
                 f"    {moment} t={times[sample]:.4f} s: vx={twists[sample, 0]:+.4f} m/s, "
                 f"vy={twists[sample, 1]:+.4f} m/s, omega={twists[sample, 2]:+.4f} rad/s"
@@ -718,18 +725,20 @@ def main():
     fig.suptitle(args.csv.name)
     fig.tight_layout()
 
-    energy_figure, energy_axis = plt.subplots(figsize=(10, 6))
-    plot_energy_analogs(energy_axis, rollouts)
-    energy_figure.suptitle(args.csv.name)
-    energy_figure.tight_layout()
+    if args.energy:
+        energy_figure, energy_axis = plt.subplots(figsize=(10, 6))
+        plot_energy_analogs(energy_axis, rollouts)
+        energy_figure.suptitle(args.csv.name)
+        energy_figure.tight_layout()
 
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(args.output, dpi=150, bbox_inches="tight")
         print(f"Saved {args.output}")
-        energy_output = args.output.with_name(f"{args.output.stem}_energy{args.output.suffix}")
-        energy_figure.savefig(energy_output, dpi=150, bbox_inches="tight")
-        print(f"Saved {energy_output}")
+        if args.energy:
+            energy_output = args.output.with_name(f"{args.output.stem}_energy{args.output.suffix}")
+            energy_figure.savefig(energy_output, dpi=150, bbox_inches="tight")
+            print(f"Saved {energy_output}")
     else:
         plt.show()
 
