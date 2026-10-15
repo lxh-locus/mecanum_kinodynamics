@@ -34,3 +34,26 @@ python sliding_stopping_distance_rollout.py --max-body-x-deceleration 4.0 --max-
 python sliding_stopping_distance_rollout.py --sweep-n-angles 24 --direction-range-scale 1.25
 python sliding_stopping_distance_rollout.py --hide-requested-bounds-box
 ```
+
+## Recorded Trajectory Comparison
+
+Compare integrated odom and EKF-filtered trajectories with predicted braking
+paths over a recording's selected time window:
+
+```bash
+conda_activate
+python experiments/analysis_comparison.py data/v2-27361-shelved/Fast2.csv --time-window 0 1
+```
+
+The default strategy is `sliding-coulomb-approx`. Use `--strategies all` or
+provide one or more strategy names from `--help`. Every prediction starts at
+the exact selected start time with zero pose and the interpolated EKF body
+velocity; `--initial-source odom` uses odom velocity instead. The interval is
+limited to common odom/IMU coverage, and predictions end at rest or at the
+interval's end. `--max-time` can further cap their duration.
+
+Use `--start-at-brake` to begin at the first brake-engaged rising edge within
+the window. Bias estimation and EKF processing still use the full recording,
+with the same bias options as the raw-data rollout script. Pure IMU rollouts
+are omitted. Energy graphs are off unless `--energy` is supplied.
+`--output tmp/comparison.png` saves the figure instead of opening it.
