@@ -187,6 +187,11 @@ def build_strategy_rollouts(initial_velocity, start, stop, args):
         if name not in selected:
             continue
         if name == "independent-axis":
+            parameter_summary = (
+                f"brake deceleration: x={args.brake_deceleration_x:.3f} m/s^2, "
+                f"y={args.brake_deceleration_y:.3f} m/s^2, "
+                f"yaw={args.brake_deceleration_yaw:.3f} rad/s^2"
+            )
             states, velocities = rollout_independent_axis_braking(
                 initial_velocity,
                 (args.brake_deceleration_x, args.brake_deceleration_y, args.brake_deceleration_yaw),
@@ -205,6 +210,11 @@ def build_strategy_rollouts(initial_velocity, start, stop, args):
         else:
             options = dict(params=params, dt=args.dt, max_time=horizon)
             if name == "discrete-empirical":
+                parameter_summary = (
+                    f"body deceleration: cardinal={args.cardinal_body_deceleration:.3f} m/s^2, "
+                    f"diagonal={args.diagonal_body_deceleration:.3f} m/s^2; "
+                    f"diagonal angle half-width={args.diagonal_angle_half_width_degrees:.3f} deg"
+                )
                 states, velocities, duration, stopped = rollout_discrete_empirical_deceleration(
                     initial_velocity,
                     cardinal_body_deceleration=args.cardinal_body_deceleration,
@@ -217,9 +227,16 @@ def build_strategy_rollouts(initial_velocity, start, stop, args):
                 wheel_braking = individual_wheel_braking_deceleration(
                     args.max_body_x_deceleration, params=params, model=model
                 )
+                parameter_summary = (
+                    f"per-wheel deceleration={wheel_braking:.3f} m/s^2; "
+                    f"max body x deceleration={args.max_body_x_deceleration:.3f} m/s^2"
+                )
                 if model == "velocity-axis":
                     options["deceleration_fn"] = sliding_deceleration_coulomb_velocity_axis
                 elif model == "approx":
+                    parameter_summary += (
+                        f"; diagonal angle half-width={args.diagonal_angle_half_width_degrees:.3f} deg"
+                    )
                     options["deceleration_fn"] = sliding_deceleration_approx_model
                     options["deceleration_kwargs"] = dict(
                         wheel_braking_deceleration=wheel_braking, params=params,
@@ -229,9 +246,31 @@ def build_strategy_rollouts(initial_velocity, start, stop, args):
                     initial_velocity, wheel_braking_deceleration=wheel_braking, **options
                 )
             elapsed = np.minimum(np.arange(len(states)) * args.dt, horizon)
-        print(f"{name}: duration={duration:.3f} s, stopped={stopped}")
+        print(f"{name}: duration={duration:.3f} s, stopped={stopped}; {parameter_summary}")
         rollouts.append((name, color, start + elapsed, velocities, states))
     return rollouts
+
+
+def comparison_figure_title(args):
+    selected = set(STRATEGY_COLORS) if "all" in args.strategies else set(args.strategies)
+    wheel_decelerations = []
+    params = MecanumPhysicsParams()
+    for name in STRATEGY_COLORS:
+        if name in selected and name.startswith("sliding-coulomb-"):
+            model = name.removeprefix("sliding-coulomb-")
+            value = individual_wheel_braking_deceleration(
+                args.max_body_x_deceleration, params=params, model=model
+            )
+            wheel_decelerations.append((model, value))
+    if not wheel_decelerations:
+        return args.csv.name
+    if len(wheel_decelerations) == 1:
+        model, value = wheel_decelerations[0]
+        detail = f"per-wheel deceleration ({model}): {value:.3f} m/s^2"
+    else:
+        values = ", ".join(f"{model}={value:.3f}" for model, value in wheel_decelerations)
+        detail = f"per-wheel deceleration [m/s^2]: {values}"
+    return f"{args.csv.name}\n{detail}"
 
 
 def main(argv=None):
@@ -249,12 +288,13 @@ def main(argv=None):
     figure, (velocity_axis, path_axis) = plt.subplots(1, 2, figsize=(15, 7))
     raw.plot_body_velocities(velocity_axis, rollouts)
     raw.plot_rollout_paths(path_axis, rollouts, RobotFootprint(), args.footprint_stride)
-    figure.suptitle(args.csv.name)
+    title = comparison_figure_title(args)
+    figure.suptitle(title)
     figure.tight_layout()
     if args.energy:
         energy_figure, energy_axis = plt.subplots(figsize=(10, 6))
         raw.plot_energy_analogs(energy_axis, rollouts)
-        energy_figure.suptitle(args.csv.name)
+        energy_figure.suptitle(title)
         energy_figure.tight_layout()
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)

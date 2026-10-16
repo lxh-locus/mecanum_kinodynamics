@@ -4,6 +4,7 @@ import pytest
 from experiments.analysis_comparison import (
     STRATEGY_COLORS,
     build_strategy_rollouts,
+    comparison_figure_title,
     load_recorded_rollouts,
     main,
     parse_args,
@@ -18,6 +19,14 @@ def test_comparison_defaults_to_approx_and_ekf_without_energy():
     assert args.strategies == ["sliding-coulomb-approx"]
     assert args.initial_source == "ekf"
     assert not args.energy
+
+
+def test_comparison_title_includes_selected_per_wheel_deceleration():
+    args = parse_args(["recording.csv"])
+
+    title = comparison_figure_title(args)
+
+    assert title == "recording.csv\nper-wheel deceleration (approx): 0.225 m/s^2"
 
 
 def test_window_rollout_interpolates_exact_start_and_stop_and_rebases_heading():
@@ -35,7 +44,7 @@ def test_window_rollout_interpolates_exact_start_and_stop_and_rebases_heading():
 
 
 @pytest.mark.parametrize("strategy", STRATEGY_COLORS)
-def test_every_strategy_shares_initial_conditions_and_stays_in_window(strategy):
+def test_every_strategy_shares_initial_conditions_and_stays_in_window(strategy, capsys):
     args = parse_args(["recording.csv", "--strategies", strategy, "--dt", "0.01"])
     initial = np.array([0.8, -0.2, 0.3])
 
@@ -49,6 +58,41 @@ def test_every_strategy_shares_initial_conditions_and_stays_in_window(strategy):
     np.testing.assert_allclose(times[[0, -1]], [12.3, 12.337])
     assert np.all(np.diff(times) > 0.0)
     assert len(times) == len(velocities) == len(states)
+    output = capsys.readouterr().out
+    assert f"{strategy}: duration=" in output
+    assert "stopped=" in output
+    if strategy.startswith("sliding-coulomb-"):
+        assert "per-wheel deceleration=" in output
+        assert "max body x deceleration=0.900 m/s^2" in output
+
+
+@pytest.mark.parametrize("strategy, options, expected", [
+    (
+        "independent-axis",
+        ["--brake-deceleration-x", "1.1", "--brake-deceleration-y", "1.2",
+         "--brake-deceleration-yaw", "2.3"],
+        "brake deceleration: x=1.100 m/s^2, y=1.200 m/s^2, yaw=2.300 rad/s^2",
+    ),
+    (
+        "discrete-empirical",
+        ["--cardinal-body-deceleration", "1.2", "--diagonal-body-deceleration", "0.8",
+         "--diagonal-angle-half-width-degrees", "7"],
+        "body deceleration: cardinal=1.200 m/s^2, diagonal=0.800 m/s^2; "
+        "diagonal angle half-width=7.000 deg",
+    ),
+    (
+        "sliding-coulomb-approx",
+        ["--max-body-x-deceleration", "1.2", "--diagonal-angle-half-width-degrees", "7"],
+        "per-wheel deceleration=0.300 m/s^2; max body x deceleration=1.200 m/s^2; "
+        "diagonal angle half-width=7.000 deg",
+    ),
+])
+def test_strategy_printout_includes_configured_braking_parameters(strategy, options, expected, capsys):
+    args = parse_args(["recording.csv", "--strategies", strategy, *options])
+
+    build_strategy_rollouts(np.array([0.8, -0.2, 0.3]), 0.0, 0.02, args)
+
+    assert expected in capsys.readouterr().out
 
 
 def test_all_strategies_handle_rest_and_max_time():
