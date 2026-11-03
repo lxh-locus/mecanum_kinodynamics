@@ -300,10 +300,15 @@ def sliding_deceleration_coulomb_fixed_axis(
 
     # A slipping roller supplies its full Coulomb braking value along its axis.
     # A zero projection means it is fully rolling, so it supplies no braking.
+    # print("body velocity:\n", body_velocity)
     axis_acceleration = -wheel_braking_deceleration * np.sign(rolling_projection)
     axis_acceleration[np.isclose(rolling_projection, 0.0, atol=tolerance)] = 0.0
+    # print("axis_accelerations:\n", axis_acceleration)
     contact_accelerations = axis_acceleration[:, np.newaxis] * roller_directions
-    return _body_acceleration_from_contacts(contact_accelerations, wheel_positions, params)
+    # print("contact_accelerations:\n", contact_accelerations)
+    body_acceleration = _body_acceleration_from_contacts(contact_accelerations, wheel_positions, params)
+    # print("body_acceleration:\n", body_acceleration)
+    return body_acceleration #_body_acceleration_from_contacts(contact_accelerations, wheel_positions, params)
 
 
 def sliding_deceleration_coulomb_velocity_axis(
@@ -368,7 +373,6 @@ def sliding_deceleration_coulomb_velocity_axis(
     contact_accelerations = -wheel_braking_deceleration * contact_directions
     contact_accelerations[np.isclose(rolling_projection, 0.0, atol=tolerance)] = 0.0
     return _body_acceleration_from_contacts(contact_accelerations, wheel_positions, params)
-
 
 def sliding_deceleration_discrete_emperical(
     body_velocity,

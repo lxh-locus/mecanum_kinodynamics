@@ -4,9 +4,9 @@ from experiments.analysis_raw_data_rollout import (
     KALMAN_Q,
     KALMAN_R,
     find_rising_edge,
-    COPILOT_fuse_imu_odom_velocity,
     fuse_imu_odom_velocity,
     fuse_imu_odom_velocity_biascomp,
+    load_optional_topic,
     rebase_states,
     state_at,
 )
@@ -37,46 +37,44 @@ def test_rebase_states_uses_interpolated_event_pose_as_origin():
     np.testing.assert_allclose(actual, [[1.0, 0.0, 0.0]])
 
 
-def test_fuse_imu_odom_velocity_preserves_matching_constant_measurements():
-    imu_times = np.array([0.0, 1.0, 2.0])
-    imu_values = np.tile([0.0, 0.0, 0.0], (3, 1))
-    odom_times = np.array([0.0, 2.0])
-    odom_twists = np.tile([0.4, -0.2, 0.0], (2, 1))
+def test_load_optional_topic_returns_none_when_columns_are_absent(tmp_path):
+    path = tmp_path / "without_global_pose.csv"
+    path.write_text("__time,/imu/value\n0.0,1.0\n", encoding="utf-8")
 
-    fused = COPILOT_fuse_imu_odom_velocity(imu_times, imu_values, odom_times, odom_twists)
+    actual = load_optional_topic(
+        path,
+        (
+            "/odom_global/pose/pose/position/x",
+            "/odom_global/pose/pose/position/y",
+        ),
+        "/odom_global/header/stamp",
+    )
 
-    np.testing.assert_allclose(fused, np.tile([0.4, -0.2, 0.0], (3, 1)), atol=1e-12)
-
-
-def test_fuse_imu_odom_velocity_accounts_for_rotating_body_frame():
-    # Steady circular motion: a perfect accelerometer reads the centripetal term omega x v.
-    times = np.arange(0.0, 2.0, 0.01)
-    imu_values = np.tile([0.0, 1.0, 1.0], (len(times), 1))
-    odom_twists = np.tile([1.0, 0.0, 1.0], (len(times), 1))
-
-    fused = COPILOT_fuse_imu_odom_velocity(times, imu_values, times, odom_twists)
-
-    np.testing.assert_allclose(fused[-1], [1.0, 0.0, 1.0], atol=1e-9)
+    assert actual is None
 
 
-def test_fuse_imu_odom_velocity_weights_both_omega_sources_by_variance():
-    times = np.array([0.0, 0.5, 1.0])
-    imu_values = np.tile([0.0, 0.0, 1.2], (3, 1))
-    odom_twists = np.tile([0.0, 0.0, 1.0], (3, 1))
+def test_load_optional_topic_reads_timestamped_pose_columns(tmp_path):
+    path = tmp_path / "with_global_pose.csv"
+    path.write_text(
+        "__time,/robot/odom_global/header/stamp,"
+        "/robot/odom_global/pose/pose/position/x,"
+        "/robot/odom_global/pose/pose/position/y\n"
+        "100.0,100.0,1.0,2.0\n"
+        "100.1,100.1,3.0,4.0\n",
+        encoding="utf-8",
+    )
 
-    fused = COPILOT_fuse_imu_odom_velocity(times, imu_values, times, odom_twists)
+    times, values = load_optional_topic(
+        path,
+        (
+            "/odom_global/pose/pose/position/x",
+            "/odom_global/pose/pose/position/y",
+        ),
+        "/odom_global/header/stamp",
+    )
 
-    assert 1.0 < fused[-1, 2] < 1.2
-
-
-def test_fuse_imu_odom_velocity_predicts_from_linear_acceleration():
-    times = np.array([0.0, 1.0])
-    imu_values = np.array([[1.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
-    odom_twists = np.zeros((2, 3))
-
-    fused = COPILOT_fuse_imu_odom_velocity(times, imu_values, times, odom_twists)
-
-    assert fused[1, 0] > fused[0, 0]
+    np.testing.assert_allclose(times, [100.0, 100.1])
+    np.testing.assert_allclose(values, [[1.0, 2.0], [3.0, 4.0]])
 
 
 def test_active_fuse_imu_odom_velocity_initializes_from_first_odom_measurement():

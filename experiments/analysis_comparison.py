@@ -46,7 +46,7 @@ def parse_args(argv=None):
     parser.add_argument("csv", type=Path, help="PlotJuggler-style CSV recording.")
     parser.add_argument(
         "--strategies", nargs="+", choices=[*STRATEGY_COLORS, "all"],
-        default=["sliding-coulomb-approx"],
+        default=["sliding-coulomb-fixed-axis"],
         help="Braking strategies to compare (default: sliding-coulomb-approx).",
     )
     parser.add_argument(
@@ -73,7 +73,7 @@ def parse_args(argv=None):
         "--max-time", type=float,
         help="Cap predicted duration [s]; default: the full selected interval. Predictions never exceed the interval.",
     )
-    parser.add_argument("--max-body-x-deceleration", type=float, default=0.9)
+    parser.add_argument("--max-body-x-deceleration", type=float, default=3.2)
     parser.add_argument("--brake-deceleration-x", type=float, default=0.9)
     parser.add_argument("--brake-deceleration-y", type=float, default=0.9)
     parser.add_argument("--brake-deceleration-yaw", type=float, default=3.0)
@@ -167,12 +167,14 @@ def load_recorded_rollouts(args):
             )
         imu_bias[:2] = imu_values[stationary, :2].mean(axis=0)
     print(f"IMU bias: ax={imu_bias[0]:.4f} m/s^2, ay={imu_bias[1]:.4f} m/s^2, omega={imu_bias[2]:.5f} rad/s")
+    _, imu_integrated_twists = raw.integrate_imu(imu_times, imu_values, imu_bias)
     ekf_twists = raw.fuse_imu_odom_velocity(
         imu_times, imu_values - imu_bias, odom_times, odom_twists, braking
     )
     print(f"Comparison interval: [{start:.6f}, {stop:.6f}] s")
     return [
         window_rollout("odom velocity integrated", raw.ODOM_COLOR, odom_times, odom_twists, start, stop),
+        window_rollout("imu integrated", raw.IMU_COLOR, imu_times, imu_integrated_twists, start, stop),
         window_rollout("imu EKF fused", raw.EKF_COLOR, imu_times, ekf_twists, start, stop),
     ]
 
@@ -276,7 +278,8 @@ def comparison_figure_title(args):
 def main(argv=None):
     args = parse_args(argv)
     recorded = load_recorded_rollouts(args)
-    source = recorded[1 if args.initial_source == "ekf" else 0]
+    source_label = "imu EKF fused" if args.initial_source == "ekf" else "odom velocity integrated"
+    source = next(rollout for rollout in recorded if rollout[0] == source_label)
     initial_velocity = source[3][0].copy()
     start, stop = source[2][[0, -1]]
     print(
@@ -285,15 +288,16 @@ def main(argv=None):
         f"omega={initial_velocity[2]:+.4f} rad/s"
     )
     rollouts = recorded + build_strategy_rollouts(initial_velocity, start, stop, args)
+    path_rollouts = [rollout for rollout in rollouts if rollout[0] != "imu integrated"]
     figure, (velocity_axis, path_axis) = plt.subplots(1, 2, figsize=(15, 7))
     raw.plot_body_velocities(velocity_axis, rollouts)
-    raw.plot_rollout_paths(path_axis, rollouts, RobotFootprint(), args.footprint_stride)
+    raw.plot_rollout_paths(path_axis, path_rollouts, RobotFootprint(), args.footprint_stride)
     title = comparison_figure_title(args)
     figure.suptitle(title)
     figure.tight_layout()
     if args.energy:
         energy_figure, energy_axis = plt.subplots(figsize=(10, 6))
-        raw.plot_energy_analogs(energy_axis, rollouts)
+        raw.plot_energy_analogs(energy_axis, path_rollouts)
         energy_figure.suptitle(title)
         energy_figure.tight_layout()
     if args.output:

@@ -122,12 +122,16 @@ def recorded_topics(monkeypatch):
     monkeypatch.setattr(raw, "fuse_imu_odom_velocity", lambda *args: ekf_twists)
 
 
-def test_recorded_rollouts_use_same_exact_interval_without_pure_imu(recorded_topics):
+def test_recorded_rollouts_include_integrated_imu_and_share_exact_interval(recorded_topics):
     args = parse_args(["recording.csv", "--time-window", "0.5", "2.5", "--no-no-motion-bias"])
 
     rollouts = load_recorded_rollouts(args)
 
-    assert [rollout[0] for rollout in rollouts] == ["odom velocity integrated", "imu EKF fused"]
+    assert [rollout[0] for rollout in rollouts] == [
+        "odom velocity integrated",
+        "imu integrated",
+        "imu EKF fused",
+    ]
     for _, _, times, _, states in rollouts:
         np.testing.assert_allclose(times[[0, -1]], [0.5, 2.5])
         np.testing.assert_allclose(states[0], np.zeros(3))
@@ -156,8 +160,9 @@ def test_main_uses_selected_initial_source_and_only_comparison_plots(
     import matplotlib.pyplot as plt
 
     captured = []
+    path_captured = []
     monkeypatch.setattr(raw, "plot_body_velocities", lambda axis, rollouts: captured.extend(rollouts))
-    monkeypatch.setattr(raw, "plot_rollout_paths", lambda *args: None)
+    monkeypatch.setattr(raw, "plot_rollout_paths", lambda axis, rollouts, *args: path_captured.extend(rollouts))
     monkeypatch.setattr(plt, "show", lambda: None)
     before = set(plt.get_fignums())
     try:
@@ -166,7 +171,9 @@ def test_main_uses_selected_initial_source_and_only_comparison_plots(
             "--initial-source", source,
         ])
         assert len(set(plt.get_fignums()) - before) == 1
-        assert len(captured) == 3
+        assert len(captured) == 4
+        assert captured[1][0] == "imu integrated"
+        assert "imu integrated" not in [rollout[0] for rollout in path_captured]
         assert captured[-1][0] == "sliding-coulomb-approx"
         np.testing.assert_allclose(captured[-1][3][0], expected)
         assert captured[-1][2][0] == 0.5

@@ -40,6 +40,11 @@ ODOM_POSE_SUFFIXES = (
     "/odom/pose/pose/position/y",
     "/odom/pose/pose/orientation/yaw_deg",
 )
+ODOM_GLOBAL_POSE_SUFFIXES = (
+    "/odom_global/pose/pose/position/x",
+    "/odom_global/pose/pose/position/y",
+    "/odom_global/pose/pose/orientation/yaw_deg",
+)
 IMU_SUFFIXES = (
     "/imu/linear_acceleration/x",
     "/imu/linear_acceleration/y",
@@ -47,7 +52,7 @@ IMU_SUFFIXES = (
 )
 BRAKE_ENGAGED_SUFFIX = "/brake_engaged/data"
 ODOM_COLOR = "tab:blue"
-IMU_COLOR = "tab:red"
+IMU_COLOR = "tab:pink"
 EKF_COLOR = "tab:orange"
 KALMAN_Q = np.diag([.5**2, .5**2, 0.25**2])
 # Measurement order: odom vx, odom vy, odom omega, gyro z. The gyro entry is smaller so omega
@@ -107,7 +112,7 @@ def fuse_imu_odom_velocity(imu_times, imu_values, odom_times, odom_twists, braki
     covariance = identity * 1e6
     fused = np.empty((len(imu_times), 3), dtype=float)
 
-    half_life_time = 0.02 # In seconds, for decaying covariance spike when braking occurs
+    half_life_time = 0.025 # In seconds, for decaying covariance spike when braking occurs
     tau = half_life_time/np.log(2)
     # Alternate approach, a tau that converges to target_percent_remaining within target_time time
     # target_time = 0.4
@@ -267,6 +272,33 @@ def load_topic(path, suffixes, stamp_suffix):
 
     if len(times) < 2:
         raise ValueError(f"Need at least two samples for {stamp_suffix} in {path}, found {len(times)}")
+    times = np.asarray(times, dtype=float)
+    order = np.argsort(times, kind="stable")
+    return times[order], np.asarray(values, dtype=float)[order]
+
+
+def load_optional_topic(path, suffixes, stamp_suffix):
+    """Load a multi-column topic, or return ``None`` when its columns are absent."""
+    with Path(path).open(newline="", encoding="utf-8") as csv_file:
+        reader = csv.DictReader(csv_file)
+        header = reader.fieldnames or []
+        if any(not any(name.endswith(suffix) for name in header) for suffix in suffixes):
+            return None
+        columns = [_find_column(header, suffix) for suffix in suffixes]
+        stamp_matches = [name for name in header if name.endswith(stamp_suffix)]
+        if len(stamp_matches) > 1:
+            raise ValueError(f"Expected at most one column ending in '{stamp_suffix}', found {stamp_matches}")
+        stamp_column = stamp_matches[0] if stamp_matches else "__time"
+        times = []
+        values = []
+        for row in reader:
+            if any(not row[column] for column in columns):
+                continue
+            times.append(float(row[stamp_column] or row["__time"]))
+            values.append([float(row[column]) for column in columns])
+
+    if len(times) < 2:
+        return None
     times = np.asarray(times, dtype=float)
     order = np.argsort(times, kind="stable")
     return times[order], np.asarray(values, dtype=float)[order]
@@ -513,12 +545,20 @@ def main():
 
     odom_times, odom_twists = load_topic(args.csv, ODOM_SUFFIXES, "/odom/header/stamp")
     odom_pose_times, odom_pose_values = load_topic(args.csv, ODOM_POSE_SUFFIXES, "/odom/header/stamp")
+    odom_global_pose = load_optional_topic(
+        args.csv, ODOM_GLOBAL_POSE_SUFFIXES, "/odom_global/header/stamp"
+    )
     imu_times, imu_values = load_topic(args.csv, IMU_SUFFIXES, "/imu/header/stamp")
     t0 = min(odom_times[0], imu_times[0])
     odom_times = odom_times - t0
     odom_pose_times = odom_pose_times - t0
     odom_pose_states = odom_pose_values.copy()
     odom_pose_states[:, 2] = np.unwrap(np.radians(odom_pose_states[:, 2]))
+    if odom_global_pose is not None:
+        odom_global_pose_times, odom_global_pose_values = odom_global_pose
+        odom_global_pose_times = odom_global_pose_times - t0
+        odom_global_pose_states = odom_global_pose_values.copy()
+        odom_global_pose_states[:, 2] = np.unwrap(np.radians(odom_global_pose_states[:, 2]))
     imu_times = imu_times - t0
     brake_signal = load_optional_signal(args.csv, BRAKE_ENGAGED_SUFFIX)
     braking = np.zeros(len(imu_times), dtype=bool)
@@ -599,6 +639,17 @@ def main():
     odom_pose_origin = (
         state_at(odom_pose_times, odom_pose_states, brake_start) if brake_start is not None else None
     )
+    if odom_global_pose is not None:
+        odom_global_pose_in = np.ones(len(odom_global_pose_times), dtype=bool)
+        if display_start is not None:
+            odom_global_pose_in &= odom_global_pose_times >= display_start
+        if display_stop is not None:
+            odom_global_pose_in &= odom_global_pose_times <= display_stop
+        odom_global_pose_origin = (
+            state_at(odom_global_pose_times, odom_global_pose_states, brake_start)
+            if brake_start is not None
+            else None
+        )
     rollouts = [
         (
             "odom velocity integrated",
@@ -626,6 +677,20 @@ def main():
             rebase_states(odom_pose_states[odom_pose_in], odom_pose_origin),
         ),
     ]
+    if odom_global_pose is None:
+        print("Skipping odom_global position: topic is not available")
+    elif np.count_nonzero(odom_global_pose_in) < 2:
+        print("Skipping odom_global position: fewer than two samples in the selected interval")
+    else:
+        path_rollouts.append(
+            (
+                "odom_global position recorded",
+                "tab:purple",
+                odom_global_pose_times[odom_global_pose_in],
+                np.zeros((np.count_nonzero(odom_global_pose_in), 3)),
+                rebase_states(odom_global_pose_states[odom_global_pose_in], odom_global_pose_origin),
+            )
+        )
     print("Body velocity entering the rollout:")
     for label, times, twists, mask in (
         ("odom", odom_times, odom_twists, odom_in),
