@@ -179,15 +179,16 @@ H=\frac{1}{r}\begin{bmatrix}
 1&-1&-L\\
 1&1&L\\
 1&1&-L
-\end{bmatrix},\qquad
-\ddot{\mathbf{q}}_{\mathrm{desired}}=H\mathbf{a}.
+\end{bmatrix}=R^{-1},\qquad
+\ddot{\mathbf{q}}_{\mathrm{desired}}=R^{-1}\mathbf{a}=H\mathbf{a}.
 $$
 
 It then removes the velocity-dependent contribution and solves for the
 minimum-norm torques:
 
 $$
-\mathbf{M}=Q^+(\ddot{\mathbf{q}}_{\mathrm{desired}}-\mathbf{n}),
+\mathbf{M}=Q^+(\ddot{\mathbf{q}}_{\mathrm{desired}}-\mathbf{n})
+=Q^+(H\mathbf{a}-\mathbf{n}),
 $$
 
 where $Q^+$ is the Moore-Penrose pseudoinverse. This is the matrix form of
