@@ -24,6 +24,7 @@ from matplotlib.patches import Polygon, Rectangle
 try:
     from .mecanum_common import Mecanum
     from .mecanum_physics import MecanumPhysicsParams
+    from .trajectory_animation import Trajectory, animate_trajectories
     from .mecanum_sliding import (
         individual_wheel_braking_deceleration,
         rollout_discrete_empirical_deceleration,
@@ -35,6 +36,7 @@ try:
 except ImportError:
     from mecanum_common import Mecanum
     from mecanum_physics import MecanumPhysicsParams
+    from trajectory_animation import Trajectory, animate_trajectories
     from mecanum_sliding import (
         individual_wheel_braking_deceleration,
         rollout_discrete_empirical_deceleration,
@@ -404,9 +406,20 @@ def main():
         help="Half-width around each 45-degree diagonal direction [deg].",
     )
     parser.add_argument("--dt", type=float, default=0.005, help="Integration step [s].")
+    parser.add_argument(
+        "--time-scale",
+        type=float,
+        default=1.0,
+        help="Animation playback speed scale (0.5 is half speed, 2 is double speed).",
+    )
     parser.add_argument("--max-time", type=float, default=5.0, help="Maximum rollout time [s].")
     parser.add_argument(
         "--max-footprints", type=int, default=40, help="Maximum swept footprint outlines drawn per strategy."
+    )
+    parser.add_argument(
+        "--animate",
+        action="store_true",
+        help="Animate robot footprints and show a time cursor on the velocity plot.",
     )
     args = parser.parse_args()
 
@@ -432,6 +445,8 @@ def main():
             raise ValueError("diagonal-angle-half-width-degrees must be in [0, 45]")
     if args.dt <= 0.0:
         raise ValueError("dt must be positive")
+    if not np.isfinite(args.time_scale) or args.time_scale <= 0.0:
+        raise ValueError("time-scale must be positive and finite")
     if args.max_time <= 0.0:
         raise ValueError("max-time must be positive")
     if args.max_footprints < 1:
@@ -534,6 +549,21 @@ def main():
     )
     velocity_handles, velocity_labels = plot_global_velocity_profiles(velocity_axis, strategies, args.dt)
     path_handles, path_labels = plot_rollout_paths(path_axis, strategies, model.footprint, args.max_footprints)
+    animation = None
+    if args.animate:
+        animation_trajectories = [
+            Trajectory(label, color, np.arange(len(states)) * args.dt, states)
+            for label, color, states, _ in strategies
+        ]
+        animation = animate_trajectories(
+            path_axis,
+            animation_trajectories,
+            model.footprint,
+            time_axes=[velocity_axis],
+            playback_speed=args.time_scale,
+            repeat=True,
+            fit_limits=False,
+        )
     figure.legend(
         velocity_handles,
         velocity_labels,

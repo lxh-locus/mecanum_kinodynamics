@@ -183,7 +183,7 @@ def animate_trajectories(
                 trail.set_data([], [])
         for cursor in cursors:
             cursor.set_xdata([timestamp, timestamp])
-        clock.set_text(f"t = {timestamp:.3f} s")
+        clock.set_text(f"t = {timestamp:.3f} s   x{playback_speed:g}")
         return animated_artists
 
     def initialize():
