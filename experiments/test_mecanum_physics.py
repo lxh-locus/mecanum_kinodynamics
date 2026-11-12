@@ -112,11 +112,28 @@ def test_inverse_kinematics_rejects_wrong_shape():
 
 
 def test_linear_dynamics_matches_matrix_product():
+    params = MecanumPhysicsParams()
     torque = np.array([1.0, -2.0, 3.0, -4.0])
 
-    actual = forward_dynamics_linear(torque)
-    expected = forward_dynamics_matrix_linear() @ torque
+    actual = forward_dynamics_linear(torque, params)
+    matrix = forward_dynamics_matrix_linear(params)
+    linear_denom = params.body_mass * params.wheel_radius**2 + 4.0 * params.wheel_spin_inertia
+    yaw_denom = (
+        params.body_yaw_inertia * params.wheel_radius**2
+        + 4.0 * params.wheel_spin_inertia * (params.wb_hlength + params.wb_hwidth) ** 2
+    )
+    k_linear = params.wheel_radius / linear_denom
+    k_yaw = params.wheel_radius * (params.wb_hlength + params.wb_hwidth) / yaw_denom
+    expected_matrix = np.array(
+        [
+            [k_linear, k_linear, k_linear, k_linear],
+            [-k_linear, k_linear, k_linear, -k_linear],
+            [-k_yaw, k_yaw, -k_yaw, k_yaw],
+        ]
+    )
 
+    np.testing.assert_allclose(matrix, expected_matrix)
+    expected = matrix @ torque
     np.testing.assert_allclose(actual, expected)
 
 

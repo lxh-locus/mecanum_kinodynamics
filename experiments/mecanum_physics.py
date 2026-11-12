@@ -190,7 +190,7 @@ def forward_dynamics_matrix_linear(params: MecanumPhysicsParams = MecanumPhysics
     )
 
     k_linear = radius / linear_denom
-    k_yaw = radius / yaw_denom
+    k_yaw = radius * l_plus_w / yaw_denom
 
     return np.array(
         [
