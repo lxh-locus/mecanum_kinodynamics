@@ -1,6 +1,7 @@
 import numpy as np
 import pytest
 
+from experiments import analysis_comparison as comparison
 from experiments.analysis_comparison import (
     STRATEGY_COLORS,
     build_strategy_rollouts,
@@ -19,6 +20,8 @@ def test_comparison_defaults_to_approx_and_ekf_without_energy():
     assert args.strategies == ["sliding-coulomb-approx"]
     assert args.initial_source == "ekf"
     assert not args.energy
+    assert not args.animate
+    assert args.time_scale == 1.0
 
 
 def test_comparison_title_includes_selected_per_wheel_deceleration():
@@ -177,6 +180,44 @@ def test_main_uses_selected_initial_source_and_only_comparison_plots(
         assert captured[-1][0] == "sliding-coulomb-approx"
         np.testing.assert_allclose(captured[-1][3][0], expected)
         assert captured[-1][2][0] == 0.5
+    finally:
+        for figure_number in set(plt.get_fignums()) - before:
+            plt.close(figure_number)
+
+
+def test_main_animation_uses_comparison_paths_and_configured_time_scale(
+    recorded_topics, monkeypatch
+):
+    import matplotlib.pyplot as plt
+
+    captured = {}
+    monkeypatch.setattr(raw, "plot_body_velocities", lambda *args: None)
+    monkeypatch.setattr(raw, "plot_rollout_paths", lambda *args: None)
+    monkeypatch.setattr(plt, "show", lambda: None)
+
+    def capture_animation(path_axis, trajectories, footprint, **kwargs):
+        captured["trajectories"] = trajectories
+        captured["kwargs"] = kwargs
+        return object()
+
+    monkeypatch.setattr(comparison, "animate_trajectories", capture_animation)
+    before = set(plt.get_fignums())
+    try:
+        main([
+            "recording.csv", "--time-window", "0.5", "2.5", "--no-no-motion-bias",
+            "--strategies", "sliding-coulomb-approx", "--animate", "--time-scale", "0.5",
+        ])
+
+        assert [trajectory.label for trajectory in captured["trajectories"]] == [
+            "odom velocity integrated",
+            "imu EKF fused",
+            "sliding-coulomb-approx",
+        ]
+        for trajectory in captured["trajectories"]:
+            assert len(trajectory.times) == len(trajectory.poses)
+        assert captured["kwargs"]["playback_speed"] == 0.5
+        assert captured["kwargs"]["repeat"] is True
+        assert len(captured["kwargs"]["time_axes"]) == 1
     finally:
         for figure_number in set(plt.get_fignums()) - before:
             plt.close(figure_number)

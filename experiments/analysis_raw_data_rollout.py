@@ -418,6 +418,29 @@ def plot_body_velocities(axis, rollouts):
     axis.legend(loc="best", fontsize="small")
 
 
+def odom_body_acceleration(times, twists):
+    """Differentiate body velocity and include the rotating-frame acceleration."""
+    acceleration = np.gradient(twists[:, :2], times, axis=0)
+    acceleration[:, 0] -= twists[:, 2] * twists[:, 1]
+    acceleration[:, 1] += twists[:, 2] * twists[:, 0]
+    return acceleration
+
+
+def plot_body_accelerations(axis, odom_times, odom_acceleration, imu_times, imu_acceleration):
+    axis.axhline(0.0, color="0.7", linewidth=0.8)
+    for label, color, times, acceleration in (
+        ("odom differentiated", ODOM_COLOR, odom_times, odom_acceleration),
+        ("imu raw", IMU_COLOR, imu_times, imu_acceleration),
+    ):
+        for index, (name, style) in enumerate((("ax", "-"), ("ay", "--"))):
+            axis.plot(times, acceleration[:, index], color=color, linestyle=style, linewidth=1.4, label=f"{label} {name}")
+    axis.set_title("body acceleration vs time", fontsize="medium")
+    axis.set_xlabel("time [s]")
+    axis.set_ylabel("body ax, ay [m/s^2]")
+    axis.grid(True, alpha=0.25)
+    axis.legend(loc="best", fontsize="small")
+
+
 def plot_rollout_paths(axis, rollouts, footprint, stride):
     for label, color, _, _, states in rollouts:
         for x, y, theta in states[::stride]:
@@ -717,8 +740,17 @@ def main():
             f"x={states[-1, 0]:.4f} m, y={states[-1, 1]:.4f} m, theta={np.degrees(states[-1, 2]):.2f} deg"
         )
 
-    fig, (velocity_axis, path_axis) = plt.subplots(1, 2, figsize=(15, 7))
+    odom_acceleration = odom_body_acceleration(odom_times, odom_twists)
+    fig = plt.figure(figsize=(15, 9))
+    grid = fig.add_gridspec(2, 2)
+    velocity_axis = fig.add_subplot(grid[0, 0])
+    acceleration_axis = fig.add_subplot(grid[1, 0], sharex=velocity_axis)
+    path_axis = fig.add_subplot(grid[:, 1])
     plot_body_velocities(velocity_axis, rollouts)
+    plot_body_accelerations(
+        acceleration_axis, odom_times[odom_in], odom_acceleration[odom_in],
+        imu_times[imu_in], imu_values[imu_in, :2],
+    )
     plot_rollout_paths(path_axis, path_rollouts, RobotFootprint(), args.footprint_stride)
     fig.suptitle(args.csv.name)
     fig.tight_layout()

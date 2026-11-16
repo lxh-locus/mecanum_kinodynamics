@@ -7,6 +7,8 @@ from experiments.analysis_raw_data_rollout import (
     fuse_imu_odom_velocity,
     fuse_imu_odom_velocity_biascomp,
     load_optional_topic,
+    odom_body_acceleration,
+    plot_body_accelerations,
     rebase_states,
     state_at,
 )
@@ -199,5 +201,26 @@ def test_plot_energy_analogs_weights_irregular_sample_intervals():
 
         np.testing.assert_allclose(axis.lines[1].get_ydata(), [0.0, 0.25, 0.85])
         np.testing.assert_allclose(power_axis.lines[0].get_ydata(), [1.0, 4.0, 0.0])
+    finally:
+        plt.close(figure)
+
+
+def test_plot_body_accelerations_uses_raw_imu_and_rotating_frame_odom():
+    import matplotlib.pyplot as plt
+
+    times = np.array([0.0, 0.1, 0.4])
+    twists = np.column_stack((1.0 + 2.0 * times, -0.5 + 3.0 * times, np.full(3, 0.5)))
+    imu_times = np.array([0.05, 0.3])
+    imu_acceleration = np.array([[7.0, -8.0], [9.0, -10.0]])
+    acceleration = odom_body_acceleration(times, twists)
+    figure, axis = plt.subplots()
+    try:
+        plot_body_accelerations(axis, times, acceleration, imu_times, imu_acceleration)
+
+        np.testing.assert_allclose(axis.lines[1].get_ydata(), 2.0 - 0.5 * twists[:, 1])
+        np.testing.assert_allclose(axis.lines[2].get_ydata(), 3.0 + 0.5 * twists[:, 0])
+        np.testing.assert_array_equal(axis.lines[3].get_xdata(), imu_times)
+        np.testing.assert_array_equal(axis.lines[3].get_ydata(), imu_acceleration[:, 0])
+        np.testing.assert_array_equal(axis.lines[4].get_ydata(), imu_acceleration[:, 1])
     finally:
         plt.close(figure)

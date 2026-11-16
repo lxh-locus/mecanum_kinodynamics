@@ -10,6 +10,7 @@ try:
     from . import analysis_raw_data_rollout as raw
     from .mecanum_common import RobotFootprint
     from .mecanum_physics import MecanumPhysicsParams
+    from .trajectory_animation import Trajectory, animate_trajectories
     from .mecanum_sliding import (
         individual_wheel_braking_deceleration,
         rollout_discrete_empirical_deceleration,
@@ -22,6 +23,7 @@ except ImportError:
     import analysis_raw_data_rollout as raw
     from mecanum_common import RobotFootprint
     from mecanum_physics import MecanumPhysicsParams
+    from trajectory_animation import Trajectory, animate_trajectories
     from mecanum_sliding import (
         individual_wheel_braking_deceleration,
         rollout_discrete_empirical_deceleration,
@@ -66,6 +68,11 @@ def parse_args(argv=None):
     parser.add_argument("--no-motion-threshold", type=float, default=0.01)
     parser.add_argument("--no-motion-window", type=float, default=1.0)
     parser.add_argument("--footprint-stride", type=int, default=1)
+    parser.add_argument("--animate", action="store_true", help="Animate rollout footprints and synchronize the time cursor.")
+    parser.add_argument(
+        "--time-scale", type=float, default=1.0,
+        help="Animation playback speed scale (0.5 is half speed, 2 is double speed).",
+    )
     parser.add_argument("--energy", action="store_true", help="Include energy and power proxies (default: off).")
     parser.add_argument("--output", type=Path, help="Save figures instead of displaying them.")
     parser.add_argument("--dt", type=float, default=0.005, help="Strategy integration step [s].")
@@ -83,7 +90,7 @@ def parse_args(argv=None):
     args = parser.parse_args(argv)
     for name in (
         "dt", "max_body_x_deceleration", "brake_deceleration_x", "brake_deceleration_y",
-        "brake_deceleration_yaw", "cardinal_body_deceleration", "diagonal_body_deceleration",
+        "brake_deceleration_yaw", "cardinal_body_deceleration", "diagonal_body_deceleration", "time_scale",
     ):
         if not np.isfinite(getattr(args, name)) or getattr(args, name) <= 0.0:
             parser.error(f"--{name.replace('_', '-')} must be positive and finite")
@@ -291,7 +298,23 @@ def main(argv=None):
     path_rollouts = [rollout for rollout in rollouts if rollout[0] != "imu integrated"]
     figure, (velocity_axis, path_axis) = plt.subplots(1, 2, figsize=(15, 7))
     raw.plot_body_velocities(velocity_axis, rollouts)
-    raw.plot_rollout_paths(path_axis, path_rollouts, RobotFootprint(), args.footprint_stride)
+    footprint = RobotFootprint()
+    raw.plot_rollout_paths(path_axis, path_rollouts, footprint, args.footprint_stride)
+    animation = None
+    if args.animate:
+        animation_trajectories = [
+            Trajectory(label, color, times, states)
+            for label, color, times, _, states in path_rollouts
+        ]
+        animation = animate_trajectories(
+            path_axis,
+            animation_trajectories,
+            footprint,
+            time_axes=[velocity_axis],
+            playback_speed=args.time_scale,
+            repeat=True,
+            fit_limits=False,
+        )
     title = comparison_figure_title(args)
     figure.suptitle(title)
     figure.tight_layout()
@@ -308,7 +331,7 @@ def main(argv=None):
             energy_output = args.output.with_name(f"{args.output.stem}_energy{args.output.suffix}")
             energy_figure.savefig(energy_output, dpi=150, bbox_inches="tight")
             print(f"Saved {energy_output}")
-    else:
+    if not args.output or args.animate:
         plt.show()
 
 
