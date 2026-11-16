@@ -6,7 +6,7 @@ from experiments.mecanum_sliding import (
     individual_wheel_braking_deceleration,
     sliding_deceleration_coulomb_fixed_axis,
 )
-from learning.animate_fixed_axis_sliding import create_animation, simulate_sliding
+from learning.animate_fixed_axis_xy_sliding import create_animation, simulate_sliding
 
 
 def test_two_stage_solution_and_wheel_forces_match_fixed_axis_model():
