@@ -3,7 +3,7 @@ import pytest
 
 from mecanum_fixed_axis import (
     MecanumPhysicsParams,
-    append_response_delay,
+    prepend_response_delay,
     fixed_axis_braking_rollout,
     individual_wheel_braking_deceleration,
     integrate_response_delay,
@@ -141,10 +141,10 @@ def test_integrate_response_delay_holds_constant_velocity():
     np.testing.assert_allclose(poses[-1], [0.5, 0.25, 0.0], atol=1e-12)
 
 
-def test_append_response_delay_shifts_braking_poses_by_delay_motion():
+def test_prepend_response_delay_shifts_braking_poses_by_delay_motion():
     braking_poses = np.array([[0.0, 0.0, 0.0], [0.1, 0.0, 0.0]])
 
-    trajectory = append_response_delay([1.0, 0.0, 0.0], braking_poses, delay=0.5, dt=0.0625)
+    trajectory = prepend_response_delay([1.0, 0.0, 0.0], braking_poses, delay=0.5, dt=0.0625)
 
     # 8 delay steps plus the appended braking pose (shared pose deduplicated).
     assert trajectory.shape == (10, 3)
@@ -152,31 +152,49 @@ def test_append_response_delay_shifts_braking_poses_by_delay_motion():
     np.testing.assert_allclose(trajectory[-1], [0.6, 0.0, 0.0], atol=1e-12)
 
 
-def test_append_response_delay_rotates_braking_poses_into_final_delay_frame():
+def test_prepend_response_delay_rotates_braking_poses_into_final_delay_frame():
     braking_poses = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
     yaw_rate = np.pi / 2.0
 
-    trajectory = append_response_delay([0.0, 0.0, yaw_rate], braking_poses, delay=1.0, dt=0.01)
+    trajectory = prepend_response_delay([0.0, 0.0, yaw_rate], braking_poses, delay=1.0, dt=0.01)
 
     final_yaw = trajectory[-2, 2]
     expected = [np.cos(final_yaw), np.sin(final_yaw), final_yaw]
     np.testing.assert_allclose(trajectory[-1], expected, atol=1e-12)
 
 
-def test_fixed_axis_braking_rollout_composes_delay_and_braking():
+def test_fixed_axis_braking_rollout_uses_individual_wheel_deceleration():
     initial_velocity = [1.0, -0.4, 0.3]
+    single_wheel_braking_deceleration = 0.75
     delay = 0.333
     dt = 0.005
 
     trajectory, stop_time, stopped, wheel_braking = fixed_axis_braking_rollout(
-        initial_velocity, 4.0, delay, dt=dt
+        initial_velocity, single_wheel_braking_deceleration, delay, dt=dt
     )
 
-    np.testing.assert_allclose(wheel_braking, np.sqrt(2.0))
+    np.testing.assert_allclose(wheel_braking, single_wheel_braking_deceleration)
     braking_poses, _, expected_stop_time, expected_stopped = rollout_sliding_deceleration(
-        initial_velocity, wheel_braking, dt=dt
+        initial_velocity, single_wheel_braking_deceleration, dt=dt
     )
-    expected = append_response_delay(initial_velocity, braking_poses, delay, dt)
+    expected = prepend_response_delay(initial_velocity, braking_poses, delay, dt)
     np.testing.assert_allclose(trajectory, expected)
     assert stop_time == expected_stop_time
     assert stopped == expected_stopped
+
+
+def test_fixed_axis_braking_rollout_uses_calibrated_wheel_deceleration():
+    body_x_braking_deceleration = 4.0
+    single_wheel_braking_deceleration = individual_wheel_braking_deceleration(
+        body_x_braking_deceleration
+    )
+
+    _, stop_time, stopped, wheel_braking = fixed_axis_braking_rollout(
+        [1.0, 0.0, 0.0], single_wheel_braking_deceleration, delay=0.0, dt=0.001
+    )
+
+    assert stopped
+    np.testing.assert_allclose(wheel_braking, single_wheel_braking_deceleration)
+    np.testing.assert_allclose(
+        stop_time, 1.0 / body_x_braking_deceleration, atol=1e-3
+    )

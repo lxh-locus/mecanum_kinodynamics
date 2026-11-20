@@ -53,6 +53,8 @@ class MecanumPhysicsParams:
 
 
 def _normalized_roller_directions(params):
+    # TODO: Would it make sense to embedded this in the physics model above, since mecanum is [almost] always 45deg tilts?
+    # for example, on initialization, set to ( (cos(45deg), sin(-45deg)), etc... )
     """Return the validated, unit-norm (4, 2) roller-direction array."""
     roller_directions = np.asarray(params.roller_directions, dtype=float)
     if roller_directions.shape != (4, 2):
@@ -155,7 +157,7 @@ def _sliding_contact_data(body_velocity, params, tolerance):
         / contact_speeds[nonzero_contacts, np.newaxis]
     )
     rolling_projection = np.sum(roller_directions * contact_directions, axis=1)
-    rolling_projection = np.clip(rolling_projection, -1.0, 1.0)
+    rolling_projection = np.clip(rolling_projection, -1.0, 1.0) # TODO: Maybe remove since only care about sign
     return wheel_positions, roller_directions, rolling_projection
 
 
@@ -179,7 +181,7 @@ def sliding_deceleration_coulomb_fixed_axis(
     params: MecanumPhysicsParams = MecanumPhysicsParams(),
     tolerance=1e-9,
 ):
-    """Generate a planar deceleration using a roller friction-circle model.
+    """Generate a planar deceleration using a roller coulomb model.
 
     The contact force at each wheel is resolved in the roller-axis frame. The
     component along ``roller_direction`` is the braking component; the
@@ -280,7 +282,7 @@ def rollout_sliding_deceleration(
         speed_tolerance: Translational stopping threshold in m/s.
         yaw_rate_tolerance: Yaw-rate stopping threshold in rad/s.
     Returns:
-        ``(states, velocities, stop_time, stopped)``. ``states`` are
+        ``(poses, velocities, stop_time, stopped)``. ``poses`` are
         ``[x, y, theta]`` rows, and ``velocities`` are ``[vx, vy, yaw_rate]`` rows.
     """
     if params is None:
@@ -298,7 +300,7 @@ def rollout_sliding_deceleration(
         raise ValueError("yaw_rate_tolerance must be positive")
 
     max_steps = int(np.ceil(max_time / dt))
-    states = [np.zeros(3, dtype=float)]
+    poses = [np.zeros(3, dtype=float)]
     velocities = [velocity.copy()]
     stopped = _is_stopped(velocity, speed_tolerance, yaw_rate_tolerance)
     stop_time = 0.0 if stopped else max_time
@@ -320,10 +322,10 @@ def rollout_sliding_deceleration(
         body_frame_acceleration = acceleration.copy()
         body_frame_acceleration[0] += velocity[2] * velocity[1]
         body_frame_acceleration[1] -= velocity[2] * velocity[0]
-        x, y, theta = states[-1]
+        x, y, theta = poses[-1]
         c = np.cos(theta)
         s = np.sin(theta)
-        states.append(
+        poses.append(
             np.array(
                 [
                     x + step * (c * velocity[0] - s * velocity[1]),
@@ -347,7 +349,7 @@ def rollout_sliding_deceleration(
         if stopped:
             stop_time = t + step
 
-    return np.asarray(states), np.asarray(velocities), stop_time, stopped
+    return np.asarray(poses), np.asarray(velocities), stop_time, stopped
 
 
 def integrate_response_delay(initial_velocity, duration, dt):
@@ -363,8 +365,8 @@ def integrate_response_delay(initial_velocity, duration, dt):
     return poses
 
 
-def append_response_delay(initial_velocity, braking_poses, delay, dt):
-    """Hold velocity during response delay, then append braking poses."""
+def prepend_response_delay(initial_velocity, braking_poses, delay, dt):
+    """Hold velocity during response delay, then prepend braking poses."""
     response_poses = integrate_response_delay(initial_velocity, delay, dt)
     x, y, yaw = response_poses[-1]
     c = np.cos(yaw)
@@ -378,7 +380,7 @@ def append_response_delay(initial_velocity, braking_poses, delay, dt):
 
 def fixed_axis_braking_rollout(
     initial_velocity,
-    body_x_braking_deceleration,
+    single_wheel_braking_deceleration,
     delay,
     params=None,
     dt=0.005,
@@ -392,6 +394,7 @@ def fixed_axis_braking_rollout(
     Args:
         initial_velocity: Initial ``[vx, vy, yaw_rate]`` body velocity.
         body_x_braking_deceleration: Positive total body-x deceleration in m/s^2.
+        single_wheel_braking_deceleration: Positive individual wheel deceleration in m/s^2
         delay: Response delay before braking begins, in seconds.
         params: Mecanum physical parameters, or ``None`` for defaults.
         dt: Integration step in seconds.
@@ -405,14 +408,12 @@ def fixed_axis_braking_rollout(
     """
     if params is None:
         params = MecanumPhysicsParams()
-    wheel_braking = individual_wheel_braking_deceleration(
-        abs(float(body_x_braking_deceleration)), params=params
-    )
+
     braking_poses, _, stop_time, stopped = rollout_sliding_deceleration(
-        initial_velocity, wheel_braking, params=params, dt=dt, max_time=max_time
+        initial_velocity, single_wheel_braking_deceleration, params=params, dt=dt, max_time=max_time
     )
-    trajectory = append_response_delay(initial_velocity, braking_poses, delay, dt)
-    return trajectory, stop_time, stopped, wheel_braking
+    trajectory = prepend_response_delay(initial_velocity, braking_poses, delay, dt)
+    return trajectory, stop_time, stopped, single_wheel_braking_deceleration
 
 
 __all__ = [
@@ -421,6 +422,6 @@ __all__ = [
     "sliding_deceleration_coulomb_fixed_axis",
     "rollout_sliding_deceleration",
     "integrate_response_delay",
-    "append_response_delay",
+    "prepend_response_delay",
     "fixed_axis_braking_rollout",
 ]
